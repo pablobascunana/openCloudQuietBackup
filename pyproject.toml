@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opencloud-quiet-backup"
+version = "0.1.0"
+description = "OpenCloud Quiet Backup — backups coherentes de OpenCloud en Docker"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+opencloud-quiet-backup = "opencloud_backup.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["opencloud_backup"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
