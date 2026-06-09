@@ -220,3 +220,6 @@ __marimo__/
 # Cursor / Engram (local tooling)
 .cursor/
 .engram/
+
+# macOS
+.DS_Store

@@ -1,37 +1,31 @@
-"""US-001: rutas del stack OpenCloud y validación."""
-
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
+__all__ = [
+    "StackPaths",
+    "ValidationError",
+    "load_stack_paths",
+    "resolve_compose_file",
+]
+
 
 class ValidationError(Exception):
-    """Error de configuración con mensaje orientado al administrador."""
-
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class StackPaths:
-    """Rutas resueltas y validadas del despliegue OpenCloud."""
-
     opencloud_root: Path
-    """Directorio que contiene ``config/`` y ``data/`` (ruta absoluta)."""
-
-    compose_dir: Path
-    """Directorio de proyecto para ``docker compose --project-directory`` (absoluta)."""
-
-    compose_file: Path
-    """Fichero ``docker-compose`` usado por el stack (absoluta)."""
-
     config_dir: Path
     data_dir: Path
+    compose_dir: Path
+    compose_file: Path
 
     @property
     def compose_project_directory(self) -> Path:
-        """Alias explícito para invocaciones a Docker Compose."""
         return self.compose_dir
 
 
@@ -70,12 +64,21 @@ def _check_readable_file(path: Path, label: str) -> None:
         )
 
 
-def resolve_compose_file(compose_dir: Path, compose_file: Path | None) -> Path:
-    """
-    Resuelve el fichero compose: explícito o ``docker-compose.yml`` / ``.yaml``.
+def _require_subdir(root: Path, name: str) -> Path:
+    path = root / name
+    if not path.exists():
+        raise ValidationError(
+            f"No existe el directorio «{name}» bajo la raíz de OpenCloud: {path}. "
+            f"Raíz indicada: {root}"
+        )
+    if not path.is_dir():
+        raise ValidationError(
+            f"«{name}» existe pero no es un directorio: {path}"
+        )
+    return path
 
-    Las rutas relativas de ``compose_file`` se interpretan respecto a ``compose_dir``.
-    """
+
+def resolve_compose_file(compose_dir: Path, compose_file: Path | None) -> Path:
     compose_dir = compose_dir.resolve()
     if compose_file is not None:
         p = compose_file.expanduser()
@@ -111,16 +114,9 @@ def load_stack_paths(
     compose_dir: Path | str | None = None,
     compose_file: Path | str | None = None,
 ) -> StackPaths:
-    """
-    Carga y valida rutas del stack (US-001).
-
-    - ``opencloud_root``: debe contener subdirectorios ``config/`` y ``data/``.
-    - ``compose_dir``: por defecto igual que ``opencloud_root``.
-    - ``compose_file``: opcional; si falta, se busca ``docker-compose.yml`` o ``.yaml``
-        dentro de ``compose_dir``.
-    """
-    root = Path(opencloud_root)
-    root_abs = _ensure_abs_dir(root, "opencloud-root")
+    root_abs = _ensure_abs_dir(Path(opencloud_root), "opencloud-root")
+    config_dir = _require_subdir(root_abs, "config")
+    data_dir = _require_subdir(root_abs, "data")
 
     cdir: Path
     if compose_dir is None:
@@ -131,28 +127,6 @@ def load_stack_paths(
     cfile_arg = Path(compose_file) if compose_file is not None else None
     compose_path = resolve_compose_file(cdir, cfile_arg)
 
-    config_dir = root_abs / "config"
-    data_dir = root_abs / "data"
-
-    if not config_dir.exists():
-        raise ValidationError(
-            f"No existe el directorio «config» bajo la raíz de OpenCloud: {config_dir}. "
-            f"Raíz indicada: {root_abs}"
-        )
-    if not config_dir.is_dir():
-        raise ValidationError(
-            f"«config» existe pero no es un directorio: {config_dir}"
-        )
-    if not data_dir.exists():
-        raise ValidationError(
-            f"No existe el directorio «data» bajo la raíz de OpenCloud: {data_dir}. "
-            f"Raíz indicada: {root_abs}"
-        )
-    if not data_dir.is_dir():
-        raise ValidationError(
-            f"«data» existe pero no es un directorio: {data_dir}"
-        )
-
     _check_readable_dir(config_dir, "config")
     _check_readable_dir(data_dir, "data")
     _check_readable_dir(cdir, "compose-dir")
@@ -160,8 +134,8 @@ def load_stack_paths(
 
     return StackPaths(
         opencloud_root=root_abs,
-        compose_dir=cdir.resolve(),
-        compose_file=compose_path,
         config_dir=config_dir.resolve(),
         data_dir=data_dir.resolve(),
+        compose_dir=cdir.resolve(),
+        compose_file=compose_path,
     )

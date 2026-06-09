@@ -1,11 +1,10 @@
-"""Tests para US-001 (rutas del stack)."""
-
 import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from conftest import make_valid_stack_tree
 from opencloud_backup.config import ValidationError, load_stack_paths, resolve_compose_file
 
 
@@ -67,16 +66,10 @@ def test_no_compose_file_in_directory() -> None:
             resolve_compose_file(d, None)
 
 
-def _make_valid_tree(root: Path) -> None:
-    (root / "config").mkdir(parents=True)
-    (root / "data").mkdir(parents=True)
-    (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-
-
 def test_happy_path_default_compose_dir() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "oc"
-        _make_valid_tree(root)
+        make_valid_stack_tree(root)
         p = load_stack_paths(root)
         assert p.opencloud_root == root.resolve()
         assert p.compose_dir == root.resolve()
@@ -87,7 +80,7 @@ def test_separate_compose_dir() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "oc"
         compose = Path(tmp) / "compose_project"
-        _make_valid_tree(root)
+        make_valid_stack_tree(root)
         compose.mkdir()
         (compose / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         p = load_stack_paths(root, compose_dir=compose)
@@ -115,7 +108,7 @@ def test_requires_config_and_data() -> None:
 def test_readable_check() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "oc"
-        _make_valid_tree(root)
+        make_valid_stack_tree(root)
         os.chmod(root / "config", 0)
         try:
             if os.access(root / "config", os.R_OK):

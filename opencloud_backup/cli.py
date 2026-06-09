@@ -1,5 +1,3 @@
-"""Interfaz de línea de comandos."""
-
 from __future__ import annotations
 
 import argparse
@@ -8,6 +6,10 @@ import sys
 from pathlib import Path
 
 from opencloud_backup.config import ValidationError, load_stack_paths
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
 
 
 def _env_path(name: str) -> Path | None:
@@ -56,7 +58,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         sys.stderr.write(
             "Error: falta --opencloud-root o la variable de entorno OCB_OPENCLOUD_ROOT.\n"
         )
-        return 2
+        return EXIT_USAGE
 
     try:
         paths = load_stack_paths(
@@ -66,7 +68,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         )
     except ValidationError as e:
         sys.stderr.write(f"Error de configuración: {e}\n")
-        return 1
+        return EXIT_ERROR
 
     print("Configuración válida:")
     print(f"  opencloud_root: {paths.opencloud_root}")
@@ -74,16 +76,15 @@ def cmd_validate(args: argparse.Namespace) -> int:
     print(f"  data_dir:       {paths.data_dir}")
     print(f"  compose_dir:    {paths.compose_dir}")
     print(f"  compose_file:   {paths.compose_file}")
-    return 0
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "validate":
-        code = cmd_validate(args)
-        raise SystemExit(code)
-    raise SystemExit(2)
+        raise SystemExit(cmd_validate(args))
+    raise SystemExit(EXIT_USAGE)
 
 
 if __name__ == "__main__":
