@@ -3,8 +3,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from conftest import make_valid_stack_tree
+
 from opencloud_backup.config import ValidationError, load_stack_paths, resolve_compose_file
 
 

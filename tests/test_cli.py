@@ -3,8 +3,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from conftest import make_valid_stack_tree
+
 from opencloud_backup.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, build_parser, cmd_validate, main
 
 

@@ -40,8 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--compose-dir",
         type=Path,
         default=_env_path("OCB_COMPOSE_DIR"),
-        help="Directorio del proyecto compose (por defecto: igual que --opencloud-root). "
-        "Variable: OCB_COMPOSE_DIR.",
+        help="Directorio del proyecto compose (por defecto: igual que --opencloud-root). Variable: OCB_COMPOSE_DIR.",
     )
     validate.add_argument(
         "--compose-file",
@@ -55,9 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     if args.opencloud_root is None:
-        sys.stderr.write(
-            "Error: falta --opencloud-root o la variable de entorno OCB_OPENCLOUD_ROOT.\n"
-        )
+        sys.stderr.write("Error: falta --opencloud-root o la variable de entorno OCB_OPENCLOUD_ROOT.\n")
         return EXIT_USAGE
 
     try:

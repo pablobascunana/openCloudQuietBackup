@@ -57,6 +57,9 @@ Ofrecer una aplicación **opinionada para OpenCloud** que:
 | Empaquetado | **Hatchling** | `pyproject.toml`, instalación editable con `uv sync`. |
 | CLI | **`argparse`** (stdlib) | Entrada: `opencloud-quiet-backup`; módulo: `python -m opencloud_backup`. |
 | Tests | **pytest** | Ejecución: `uv run pytest`. |
+| Lint y formato | **Ruff** | `uv run ruff check` / `uv run ruff format`. |
+| Tipado estático | **mypy** | `uv run mypy opencloud_backup`. |
+| Hooks Git | **pre-commit** | Ruff + mypy antes de cada commit. |
 | Metadatos de jobs (futuro) | **SQLite** | Solo para historial de ejecuciones, no para datos de OpenCloud. |
 | UI web (post-MVP) | Por definir | Probable: API mínima + UI estática; autenticación vía reverse proxy. |
 
@@ -90,7 +93,6 @@ El diseño se basa en los scripts que ya funcionan en el ecosistema del proyecto
 Opcional pero útil:
 
 - **Docker** local, para pruebas de integración futuras (US-071).
-- Editor con soporte **Ruff** o **mypy** si se añaden más adelante (no obligatorio hoy).
 
 ### Permisos en el NAS (cuando pruebes contra OpenCloud real)
 
@@ -122,6 +124,28 @@ uv run opencloud-quiet-backup validate --help
 
 # 4. Ejecutar tests
 uv run pytest
+
+# 5. Instalar hooks de pre-commit (una vez por clon)
+uv run pre-commit install
+```
+
+### Calidad de código
+
+```bash
+# Lint (opencloud_backup + tests)
+uv run ruff check opencloud_backup tests
+
+# Formato (aplica cambios)
+uv run ruff format opencloud_backup tests
+
+# Comprobar formato sin escribir
+uv run ruff format --check opencloud_backup tests
+
+# Tipado estático del paquete
+uv run mypy opencloud_backup
+
+# Ejecutar todos los hooks manualmente (sin commit)
+uv run pre-commit run --all-files
 ```
 
 ### Desarrollo sin usar el entry point instalado
@@ -150,7 +174,8 @@ Salida esperada en éxito: rutas absolutas resueltas de `opencloud_root`, `confi
 openCloudQuietBackup/
 ├── README.md                 # Este documento
 ├── USER_STORIES.md           # Backlog e historias de usuario
-├── pyproject.toml            # Metadatos, pytest y consola opencloud-quiet-backup
+├── pyproject.toml            # Metadatos, pytest, Ruff, mypy, pre-commit y consola
+├── .pre-commit-config.yaml   # Hooks Git (Ruff + mypy)
 ├── uv.lock                   # Lockfile de dependencias (commitear en el repo)
 ├── .gitignore
 ├── opencloud_backup/
@@ -159,6 +184,8 @@ openCloudQuietBackup/
 │   ├── cli.py                # Subcomandos CLI
 │   └── config.py             # US-001: rutas y validación
 └── tests/
+    ├── conftest.py           # Fixtures compartidas
+    ├── test_cli.py
     └── test_config.py
 ```
 

@@ -33,18 +33,11 @@ def _ensure_abs_dir(path: Path, label: str) -> Path:
     try:
         resolved = path.expanduser().resolve()
     except OSError as e:
-        raise ValidationError(
-            f"No se pudo resolver la ruta «{label}»: {path}. {e}"
-        ) from e
+        raise ValidationError(f"No se pudo resolver la ruta «{label}»: {path}. {e}") from e
     if not resolved.exists():
-        raise ValidationError(
-            f"La ruta «{label}» no existe: {resolved}. "
-            "Comprueba la ruta o los permisos de montaje."
-        )
+        raise ValidationError(f"La ruta «{label}» no existe: {resolved}. Comprueba la ruta o los permisos de montaje.")
     if not resolved.is_dir():
-        raise ValidationError(
-            f"La ruta «{label}» existe pero no es un directorio: {resolved}"
-        )
+        raise ValidationError(f"La ruta «{label}» existe pero no es un directorio: {resolved}")
     return resolved
 
 
@@ -68,13 +61,10 @@ def _require_subdir(root: Path, name: str) -> Path:
     path = root / name
     if not path.exists():
         raise ValidationError(
-            f"No existe el directorio «{name}» bajo la raíz de OpenCloud: {path}. "
-            f"Raíz indicada: {root}"
+            f"No existe el directorio «{name}» bajo la raíz de OpenCloud: {path}. Raíz indicada: {root}"
         )
     if not path.is_dir():
-        raise ValidationError(
-            f"«{name}» existe pero no es un directorio: {path}"
-        )
+        raise ValidationError(f"«{name}» existe pero no es un directorio: {path}")
     return path
 
 
@@ -87,17 +77,11 @@ def resolve_compose_file(compose_dir: Path, compose_file: Path | None) -> Path:
         try:
             p = p.resolve()
         except OSError as e:
-            raise ValidationError(
-                f"No se pudo resolver el fichero compose: {compose_file}. {e}"
-            ) from e
+            raise ValidationError(f"No se pudo resolver el fichero compose: {compose_file}. {e}") from e
         if not p.exists():
-            raise ValidationError(
-                f"El fichero compose indicado no existe: {p}"
-            )
+            raise ValidationError(f"El fichero compose indicado no existe: {p}")
         if not p.is_file():
-            raise ValidationError(
-                f"La ruta del compose no es un fichero regular: {p}"
-            )
+            raise ValidationError(f"La ruta del compose no es un fichero regular: {p}")
         return p
     for name in ("docker-compose.yml", "docker-compose.yaml"):
         candidate = compose_dir / name
@@ -118,11 +102,7 @@ def load_stack_paths(
     config_dir = _require_subdir(root_abs, "config")
     data_dir = _require_subdir(root_abs, "data")
 
-    cdir: Path
-    if compose_dir is None:
-        cdir = root_abs
-    else:
-        cdir = _ensure_abs_dir(Path(compose_dir), "compose-dir")
+    cdir = root_abs if compose_dir is None else _ensure_abs_dir(Path(compose_dir), "compose-dir")
 
     cfile_arg = Path(compose_file) if compose_file is not None else None
     compose_path = resolve_compose_file(cdir, cfile_arg)
