@@ -29,67 +29,74 @@ class StackPaths:
         return self.compose_dir
 
 
-def _ensure_abs_dir(path: Path, label: str) -> Path:
+def _resolve_existing_directory(path: Path, path_label: str) -> Path:
     try:
-        resolved = path.expanduser().resolve()
-    except OSError as e:
-        raise ValidationError(f"No se pudo resolver la ruta «{label}»: {path}. {e}") from e
-    if not resolved.exists():
-        raise ValidationError(f"La ruta «{label}» no existe: {resolved}. Comprueba la ruta o los permisos de montaje.")
-    if not resolved.is_dir():
-        raise ValidationError(f"La ruta «{label}» existe pero no es un directorio: {resolved}")
-    return resolved
-
-
-def _check_readable_dir(path: Path, label: str) -> None:
-    if not os.access(path, os.R_OK | os.X_OK):
+        resolved_path = path.expanduser().resolve()
+    except OSError as operating_system_error:
         raise ValidationError(
-            f"No hay permisos de lectura/ejecución sobre «{label}»: {path}. "
-            "Ejecuta con el usuario adecuado o ajusta permisos (chmod/chown)."
+            f"Could not resolve path «{path_label}»: {path}. {operating_system_error}"
+        ) from operating_system_error
+    if not resolved_path.exists():
+        raise ValidationError(
+            f"Path «{path_label}» does not exist: {resolved_path}. Check the path or mount permissions."
+        )
+    if not resolved_path.is_dir():
+        raise ValidationError(f"Path «{path_label}» exists but is not a directory: {resolved_path}")
+    return resolved_path
+
+
+def _require_directory_read_access(directory_path: Path, path_label: str) -> None:
+    if not os.access(directory_path, os.R_OK | os.X_OK):
+        raise ValidationError(
+            f"No read/execute permissions on «{path_label}»: {directory_path}. "
+            "Run as the correct user or adjust permissions (chmod/chown)."
         )
 
 
-def _check_readable_file(path: Path, label: str) -> None:
-    if not os.access(path, os.R_OK):
+def _require_file_read_access(file_path: Path, path_label: str) -> None:
+    if not os.access(file_path, os.R_OK):
         raise ValidationError(
-            f"No hay permisos de lectura sobre «{label}»: {path}. "
-            "Ejecuta con el usuario adecuado o ajusta permisos (chmod/chown)."
+            f"No read permission on «{path_label}»: {file_path}. "
+            "Run as the correct user or adjust permissions (chmod/chown)."
         )
 
 
-def _require_subdir(root: Path, name: str) -> Path:
-    path = root / name
-    if not path.exists():
+def _require_subdirectory(opencloud_root: Path, subdirectory_name: str) -> Path:
+    subdirectory_path = opencloud_root / subdirectory_name
+    if not subdirectory_path.exists():
         raise ValidationError(
-            f"No existe el directorio «{name}» bajo la raíz de OpenCloud: {path}. Raíz indicada: {root}"
+            f"Directory «{subdirectory_name}» does not exist under OpenCloud root: {subdirectory_path}. "
+            f"OpenCloud root: {opencloud_root}"
         )
-    if not path.is_dir():
-        raise ValidationError(f"«{name}» existe pero no es un directorio: {path}")
-    return path
+    if not subdirectory_path.is_dir():
+        raise ValidationError(f"«{subdirectory_name}» exists but is not a directory: {subdirectory_path}")
+    return subdirectory_path
 
 
-def resolve_compose_file(compose_dir: Path, compose_file: Path | None) -> Path:
-    compose_dir = compose_dir.resolve()
+def resolve_compose_file(compose_directory: Path, compose_file: Path | None) -> Path:
+    compose_directory = compose_directory.resolve()
     if compose_file is not None:
-        p = compose_file.expanduser()
-        if not p.is_absolute():
-            p = compose_dir / p
+        compose_file_path = compose_file.expanduser()
+        if not compose_file_path.is_absolute():
+            compose_file_path = compose_directory / compose_file_path
         try:
-            p = p.resolve()
-        except OSError as e:
-            raise ValidationError(f"No se pudo resolver el fichero compose: {compose_file}. {e}") from e
-        if not p.exists():
-            raise ValidationError(f"El fichero compose indicado no existe: {p}")
-        if not p.is_file():
-            raise ValidationError(f"La ruta del compose no es un fichero regular: {p}")
-        return p
-    for name in ("docker-compose.yml", "docker-compose.yaml"):
-        candidate = compose_dir / name
-        if candidate.is_file():
-            return candidate.resolve()
+            compose_file_path = compose_file_path.resolve()
+        except OSError as operating_system_error:
+            raise ValidationError(
+                f"Could not resolve compose file: {compose_file}. {operating_system_error}"
+            ) from operating_system_error
+        if not compose_file_path.exists():
+            raise ValidationError(f"Specified compose file does not exist: {compose_file_path}")
+        if not compose_file_path.is_file():
+            raise ValidationError(f"Compose path is not a regular file: {compose_file_path}")
+        return compose_file_path
+    for compose_filename in ("docker-compose.yml", "docker-compose.yaml"):
+        default_compose_file_candidate = compose_directory / compose_filename
+        if default_compose_file_candidate.is_file():
+            return default_compose_file_candidate.resolve()
     raise ValidationError(
-        f"No se encontró «docker-compose.yml» ni «docker-compose.yaml» en "
-        f"{compose_dir}. Indica la ruta con --compose-file o crea uno de esos ficheros."
+        f"Neither «docker-compose.yml» nor «docker-compose.yaml» found in "
+        f"{compose_directory}. Specify --compose-file or create one of those files."
     )
 
 
@@ -98,24 +105,28 @@ def load_stack_paths(
     compose_dir: Path | str | None = None,
     compose_file: Path | str | None = None,
 ) -> StackPaths:
-    root_abs = _ensure_abs_dir(Path(opencloud_root), "opencloud-root")
-    config_dir = _require_subdir(root_abs, "config")
-    data_dir = _require_subdir(root_abs, "data")
+    resolved_opencloud_root = _resolve_existing_directory(Path(opencloud_root), "opencloud-root")
+    config_directory = _require_subdirectory(resolved_opencloud_root, "config")
+    data_directory = _require_subdirectory(resolved_opencloud_root, "data")
 
-    cdir = root_abs if compose_dir is None else _ensure_abs_dir(Path(compose_dir), "compose-dir")
+    compose_directory = (
+        resolved_opencloud_root
+        if compose_dir is None
+        else _resolve_existing_directory(Path(compose_dir), "compose-dir")
+    )
 
-    cfile_arg = Path(compose_file) if compose_file is not None else None
-    compose_path = resolve_compose_file(cdir, cfile_arg)
+    explicit_compose_file = Path(compose_file) if compose_file is not None else None
+    resolved_compose_file = resolve_compose_file(compose_directory, explicit_compose_file)
 
-    _check_readable_dir(config_dir, "config")
-    _check_readable_dir(data_dir, "data")
-    _check_readable_dir(cdir, "compose-dir")
-    _check_readable_file(compose_path, "compose-file")
+    _require_directory_read_access(config_directory, "config")
+    _require_directory_read_access(data_directory, "data")
+    _require_directory_read_access(compose_directory, "compose-dir")
+    _require_file_read_access(resolved_compose_file, "compose-file")
 
     return StackPaths(
-        opencloud_root=root_abs,
-        config_dir=config_dir.resolve(),
-        data_dir=data_dir.resolve(),
-        compose_dir=cdir.resolve(),
-        compose_file=compose_path,
+        opencloud_root=resolved_opencloud_root,
+        config_dir=config_directory.resolve(),
+        data_dir=data_directory.resolve(),
+        compose_dir=compose_directory.resolve(),
+        compose_file=resolved_compose_file,
     )

@@ -9,111 +9,111 @@ from opencloud_backup.config import ValidationError, load_stack_paths, resolve_c
 
 
 def test_prefers_yml_over_yaml_when_both_exist() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        (d / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
-        (d / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-        got = resolve_compose_file(d, None)
-        assert got.name == "docker-compose.yml"
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        compose_directory = Path(temporary_directory)
+        (compose_directory / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+        (compose_directory / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        resolved_compose_file = resolve_compose_file(compose_directory, None)
+        assert resolved_compose_file.name == "docker-compose.yml"
 
 
 def test_uses_yaml_if_only_yaml() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        (d / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
-        got = resolve_compose_file(d, None)
-        assert got.name == "docker-compose.yaml"
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        compose_directory = Path(temporary_directory)
+        (compose_directory / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+        resolved_compose_file = resolve_compose_file(compose_directory, None)
+        assert resolved_compose_file.name == "docker-compose.yaml"
 
 
 def test_explicit_file_wins() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        f = d / "compose.custom.yml"
-        f.write_text("services: {}\n", encoding="utf-8")
-        got = resolve_compose_file(d, f)
-        assert got == f.resolve()
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        compose_directory = Path(temporary_directory)
+        custom_compose_file = compose_directory / "compose.custom.yml"
+        custom_compose_file.write_text("services: {}\n", encoding="utf-8")
+        resolved_compose_file = resolve_compose_file(compose_directory, custom_compose_file)
+        assert resolved_compose_file == custom_compose_file.resolve()
 
 
 def test_relative_compose_file_resolved_from_compose_dir() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        f = d / "subdir" / "compose.yml"
-        f.parent.mkdir()
-        f.write_text("services: {}\n", encoding="utf-8")
-        got = resolve_compose_file(d, Path("subdir/compose.yml"))
-        assert got == f.resolve()
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        compose_directory = Path(temporary_directory)
+        nested_compose_file = compose_directory / "subdir" / "compose.yml"
+        nested_compose_file.parent.mkdir()
+        nested_compose_file.write_text("services: {}\n", encoding="utf-8")
+        resolved_compose_file = resolve_compose_file(compose_directory, Path("subdir/compose.yml"))
+        assert resolved_compose_file == nested_compose_file.resolve()
 
 
 def test_explicit_compose_file_missing() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        with pytest.raises(ValidationError, match="no existe"):
-            resolve_compose_file(d, d / "missing.yml")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        compose_directory = Path(temporary_directory)
+        with pytest.raises(ValidationError, match="does not exist"):
+            resolve_compose_file(compose_directory, compose_directory / "missing.yml")
 
 
 def test_explicit_compose_file_not_a_file() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        (d / "not-a-file").mkdir()
-        with pytest.raises(ValidationError, match="no es un fichero"):
-            resolve_compose_file(d, d / "not-a-file")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        compose_directory = Path(temporary_directory)
+        (compose_directory / "not-a-file").mkdir()
+        with pytest.raises(ValidationError, match="not a regular file"):
+            resolve_compose_file(compose_directory, compose_directory / "not-a-file")
 
 
 def test_no_compose_file_in_directory() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        with pytest.raises(ValidationError, match="No se encontró"):
-            resolve_compose_file(d, None)
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        compose_directory = Path(temporary_directory)
+        with pytest.raises(ValidationError, match="Neither"):
+            resolve_compose_file(compose_directory, None)
 
 
 def test_happy_path_default_compose_dir() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp) / "oc"
-        make_valid_stack_tree(root)
-        p = load_stack_paths(root)
-        assert p.opencloud_root == root.resolve()
-        assert p.compose_dir == root.resolve()
-        assert p.compose_file == (root / "docker-compose.yml").resolve()
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        stack_paths = load_stack_paths(opencloud_root)
+        assert stack_paths.opencloud_root == opencloud_root.resolve()
+        assert stack_paths.compose_dir == opencloud_root.resolve()
+        assert stack_paths.compose_file == (opencloud_root / "docker-compose.yml").resolve()
 
 
 def test_separate_compose_dir() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp) / "oc"
-        compose = Path(tmp) / "compose_project"
-        make_valid_stack_tree(root)
-        compose.mkdir()
-        (compose / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-        p = load_stack_paths(root, compose_dir=compose)
-        assert p.compose_dir == compose.resolve()
-        assert p.compose_file == (compose / "docker-compose.yml").resolve()
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        compose_directory = Path(temporary_directory) / "compose_project"
+        make_valid_stack_tree(opencloud_root)
+        compose_directory.mkdir()
+        (compose_directory / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        stack_paths = load_stack_paths(opencloud_root, compose_dir=compose_directory)
+        assert stack_paths.compose_dir == compose_directory.resolve()
+        assert stack_paths.compose_file == (compose_directory / "docker-compose.yml").resolve()
 
 
 def test_opencloud_root_missing() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        missing = Path(tmp) / "does-not-exist"
-        with pytest.raises(ValidationError, match="no existe"):
-            load_stack_paths(missing)
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        missing_opencloud_root = Path(temporary_directory) / "does-not-exist"
+        with pytest.raises(ValidationError, match="does not exist"):
+            load_stack_paths(missing_opencloud_root)
 
 
 def test_requires_config_and_data() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp) / "oc"
-        root.mkdir()
-        (root / "docker-compose.yml").write_text("x", encoding="utf-8")
-        (root / "config").mkdir()
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        opencloud_root.mkdir()
+        (opencloud_root / "docker-compose.yml").write_text("x", encoding="utf-8")
+        (opencloud_root / "config").mkdir()
         with pytest.raises(ValidationError, match="data"):
-            load_stack_paths(root)
+            load_stack_paths(opencloud_root)
 
 
 def test_readable_check() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp) / "oc"
-        make_valid_stack_tree(root)
-        os.chmod(root / "config", 0)
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        os.chmod(opencloud_root / "config", 0)
         try:
-            if os.access(root / "config", os.R_OK):
-                pytest.skip("root puede leer directorios sin permiso en este entorno")
-            with pytest.raises(ValidationError, match="permiso"):
-                load_stack_paths(root)
+            if os.access(opencloud_root / "config", os.R_OK):
+                pytest.skip("root can read directories without permission in this environment")
+            with pytest.raises(ValidationError, match="permission"):
+                load_stack_paths(opencloud_root)
         finally:
-            os.chmod(root / "config", 0o755)
+            os.chmod(opencloud_root / "config", 0o755)

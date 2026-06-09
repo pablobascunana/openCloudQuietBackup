@@ -12,75 +12,75 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 
 
-def _env_path(name: str) -> Path | None:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
+def _path_from_environment_variable(environment_variable_name: str) -> Path | None:
+    environment_variable_value = os.environ.get(environment_variable_name)
+    if environment_variable_value is None or environment_variable_value.strip() == "":
         return None
-    return Path(raw)
+    return Path(environment_variable_value)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def build_argument_parser() -> argparse.ArgumentParser:
+    root_argument_parser = argparse.ArgumentParser(
         prog="opencloud-quiet-backup",
-        description="OpenCloud Quiet Backup — backups coherentes de OpenCloud en Docker.",
+        description="OpenCloud Quiet Backup — coherent backups of OpenCloud on Docker.",
     )
-    sub = p.add_subparsers(dest="command", required=True)
+    subcommand_parsers = root_argument_parser.add_subparsers(dest="command", required=True)
 
-    validate = sub.add_parser(
+    validate_subparser = subcommand_parsers.add_parser(
         "validate",
-        help="Valida rutas del stack (US-001): config/, data/ y fichero compose.",
+        help="Validate stack paths (US-001): config/, data/ and compose file.",
     )
-    validate.add_argument(
+    validate_subparser.add_argument(
         "--opencloud-root",
         type=Path,
-        default=_env_path("OCB_OPENCLOUD_ROOT"),
-        help="Raíz con config/ y data/ (o variable OCB_OPENCLOUD_ROOT).",
+        default=_path_from_environment_variable("OCB_OPENCLOUD_ROOT"),
+        help="Root with config/ and data/ (or OCB_OPENCLOUD_ROOT env var).",
     )
-    validate.add_argument(
+    validate_subparser.add_argument(
         "--compose-dir",
         type=Path,
-        default=_env_path("OCB_COMPOSE_DIR"),
-        help="Directorio del proyecto compose (por defecto: igual que --opencloud-root). Variable: OCB_COMPOSE_DIR.",
+        default=_path_from_environment_variable("OCB_COMPOSE_DIR"),
+        help="Compose project directory (default: same as --opencloud-root). Env: OCB_COMPOSE_DIR.",
     )
-    validate.add_argument(
+    validate_subparser.add_argument(
         "--compose-file",
         type=Path,
-        default=_env_path("OCB_COMPOSE_FILE"),
-        help="Ruta explícita a docker-compose.yml/.yaml (relativa a --compose-dir). "
-        "Si se omite, se busca en --compose-dir. Variable: OCB_COMPOSE_FILE.",
+        default=_path_from_environment_variable("OCB_COMPOSE_FILE"),
+        help="Explicit path to docker-compose.yml/.yaml (relative to --compose-dir). "
+        "If omitted, searched under --compose-dir. Env: OCB_COMPOSE_FILE.",
     )
-    return p
+    return root_argument_parser
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
-    if args.opencloud_root is None:
-        sys.stderr.write("Error: falta --opencloud-root o la variable de entorno OCB_OPENCLOUD_ROOT.\n")
+def run_validate_command(parsed_arguments: argparse.Namespace) -> int:
+    if parsed_arguments.opencloud_root is None:
+        sys.stderr.write("Error: --opencloud-root or OCB_OPENCLOUD_ROOT environment variable is required.\n")
         return EXIT_USAGE
 
     try:
-        paths = load_stack_paths(
-            opencloud_root=args.opencloud_root,
-            compose_dir=args.compose_dir,
-            compose_file=args.compose_file,
+        stack_paths = load_stack_paths(
+            opencloud_root=parsed_arguments.opencloud_root,
+            compose_dir=parsed_arguments.compose_dir,
+            compose_file=parsed_arguments.compose_file,
         )
-    except ValidationError as e:
-        sys.stderr.write(f"Error de configuración: {e}\n")
+    except ValidationError as validation_error:
+        sys.stderr.write(f"Configuration error: {validation_error}\n")
         return EXIT_ERROR
 
-    print("Configuración válida:")
-    print(f"  opencloud_root: {paths.opencloud_root}")
-    print(f"  config_dir:     {paths.config_dir}")
-    print(f"  data_dir:       {paths.data_dir}")
-    print(f"  compose_dir:    {paths.compose_dir}")
-    print(f"  compose_file:   {paths.compose_file}")
+    print("Valid configuration:")
+    print(f"  opencloud_root: {stack_paths.opencloud_root}")
+    print(f"  config_dir:     {stack_paths.config_dir}")
+    print(f"  data_dir:       {stack_paths.data_dir}")
+    print(f"  compose_dir:    {stack_paths.compose_dir}")
+    print(f"  compose_file:   {stack_paths.compose_file}")
     return EXIT_OK
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.command == "validate":
-        raise SystemExit(cmd_validate(args))
+def main(command_line_arguments: list[str] | None = None) -> None:
+    argument_parser = build_argument_parser()
+    parsed_arguments = argument_parser.parse_args(command_line_arguments)
+    if parsed_arguments.command == "validate":
+        raise SystemExit(run_validate_command(parsed_arguments))
     raise SystemExit(EXIT_USAGE)
 
 
