@@ -5,11 +5,15 @@ import os
 import sys
 from pathlib import Path
 
+from opencloud_backup.adapters.prerequisites import run_prerequisite_checks
 from opencloud_backup.config import ValidationError, load_stack_paths
+from opencloud_backup.domain.prereqs import DiskThreshold, JobMode, PrerequisiteReport
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
+
+_BYTES_PER_GIBIBYTE = 1024**3
 
 
 def _path_from_environment_variable(environment_variable_name: str) -> Path | None:
@@ -17,6 +21,92 @@ def _path_from_environment_variable(environment_variable_name: str) -> Path | No
     if environment_variable_value is None or environment_variable_value.strip() == "":
         return None
     return Path(environment_variable_value)
+
+
+def _optional_int_from_environment_variable(environment_variable_name: str) -> int | None:
+    environment_variable_value = os.environ.get(environment_variable_name)
+    if environment_variable_value is None or environment_variable_value.strip() == "":
+        return None
+    return int(environment_variable_value)
+
+
+def _optional_float_from_environment_variable(environment_variable_name: str) -> float | None:
+    environment_variable_value = os.environ.get(environment_variable_name)
+    if environment_variable_value is None or environment_variable_value.strip() == "":
+        return None
+    return float(environment_variable_value)
+
+
+def _format_byte_size(byte_count: int) -> str:
+    gibibytes = byte_count / _BYTES_PER_GIBIBYTE
+    if gibibytes >= 1:
+        return f"{gibibytes:.1f} GiB"
+    mebibytes = byte_count / (1024**2)
+    if mebibytes >= 1:
+        return f"{mebibytes:.1f} MiB"
+    return f"{byte_count} B"
+
+
+def _parse_job_mode(mode_value: str) -> JobMode:
+    return JobMode(mode_value)
+
+
+def _build_disk_threshold(
+    min_free_bytes: int | None,
+    min_free_percent: float | None,
+) -> DiskThreshold | None:
+    has_bytes_threshold = min_free_bytes is not None
+    has_percent_threshold = min_free_percent is not None
+    if has_bytes_threshold and has_percent_threshold:
+        return None
+    if min_free_bytes is not None:
+        return DiskThreshold(kind="bytes", value=min_free_bytes)
+    if min_free_percent is not None:
+        return DiskThreshold(kind="percent", value=int(min_free_percent))
+    return None
+
+
+def _format_prerequisite_success(report: PrerequisiteReport) -> str:
+    lines = [f"Prerequisitos OK (modo: {report.mode.value}):"]
+    if report.missing_binaries or report.failed_commands:
+        lines.append("  Binarios y comandos: OK")
+    else:
+        binary_summary = "  Binarios: docker, tar, compresión (zstd o gzip)"
+        if report.mode != JobMode.BACKUP:
+            binary_summary += ", rsync"
+        lines.append(binary_summary)
+        lines.append("  Docker Compose: OK")
+    if report.disk is not None:
+        disk_line = (
+            f"  Disco {report.disk.path}: {_format_byte_size(report.disk.free_bytes)} libres"
+        )
+        if report.disk.threshold is None:
+            disk_line += " (sin umbral)"
+        else:
+            disk_line += " (umbral cumplido)"
+        lines.append(disk_line)
+    return "\n".join(lines)
+
+
+def _format_prerequisite_failure(report: PrerequisiteReport) -> str:
+    lines = ["Error de prerequisitos:"]
+    if report.missing_binaries:
+        lines.append(f"  Binarios faltantes: {', '.join(report.missing_binaries)}")
+    if report.failed_commands:
+        lines.append(f"  Comandos fallidos: {', '.join(report.failed_commands)}")
+    if report.disk is not None and not report.disk.ok and report.disk.threshold is not None:
+        threshold = report.disk.threshold
+        if threshold.kind == "bytes":
+            lines.append(
+                f"  Disco {report.disk.path}: {_format_byte_size(report.disk.free_bytes)} libres; "
+                f"se requieren {_format_byte_size(threshold.value)}"
+            )
+        else:
+            lines.append(
+                f"  Disco {report.disk.path}: {report.disk.free_percent:.1f}% libres; "
+                f"se requiere {threshold.value}%"
+            )
+    return "\n".join(lines)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -49,6 +139,42 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Explicit path to docker-compose.yml/.yaml (relative to --compose-dir). "
         "If omitted, searched under --compose-dir. Env: OCB_COMPOSE_FILE.",
     )
+
+    prereqs_subparser = subcommand_parsers.add_parser(
+        "prereqs",
+        help="Check host prerequisites (US-002): Docker, tools, disk space.",
+    )
+    prereqs_subparser.add_argument(
+        "--opencloud-root",
+        type=Path,
+        default=_path_from_environment_variable("OCB_OPENCLOUD_ROOT"),
+        help="OpenCloud root (or OCB_OPENCLOUD_ROOT env var). Used for path validation and default disk check.",
+    )
+    prereqs_subparser.add_argument(
+        "--mode",
+        type=_parse_job_mode,
+        choices=list(JobMode),
+        default=JobMode.ALL,
+        help="Job mode: backup, restore, or all (default: all).",
+    )
+    prereqs_subparser.add_argument(
+        "--min-free-bytes",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_MIN_FREE_BYTES"),
+        help="Minimum free disk space in bytes. Env: OCB_MIN_FREE_BYTES.",
+    )
+    prereqs_subparser.add_argument(
+        "--min-free-percent",
+        type=float,
+        default=_optional_float_from_environment_variable("OCB_MIN_FREE_PERCENT"),
+        help="Minimum free disk space as percent of volume (1-100). Env: OCB_MIN_FREE_PERCENT.",
+    )
+    prereqs_subparser.add_argument(
+        "--disk-check-path",
+        type=Path,
+        default=None,
+        help="Path for disk space check (default: resolved opencloud_root).",
+    )
     return root_argument_parser
 
 
@@ -76,11 +202,54 @@ def run_validate_command(parsed_arguments: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def run_prereqs_command(parsed_arguments: argparse.Namespace) -> int:
+    if parsed_arguments.opencloud_root is None:
+        sys.stderr.write(
+            "Error: falta --opencloud-root o la variable de entorno OCB_OPENCLOUD_ROOT.\n"
+        )
+        return EXIT_USAGE
+
+    min_free_bytes: int | None = parsed_arguments.min_free_bytes
+    min_free_percent: float | None = parsed_arguments.min_free_percent
+    if min_free_bytes is not None and min_free_percent is not None:
+        sys.stderr.write(
+            "Error: --min-free-bytes y --min-free-percent son excluyentes; indica solo uno.\n"
+        )
+        return EXIT_USAGE
+
+    try:
+        stack_paths = load_stack_paths(opencloud_root=parsed_arguments.opencloud_root)
+    except ValidationError as validation_error:
+        sys.stderr.write(f"Error de configuración: {validation_error}\n")
+        return EXIT_ERROR
+
+    disk_check_path = (
+        parsed_arguments.disk_check_path.expanduser().resolve()
+        if parsed_arguments.disk_check_path is not None
+        else stack_paths.opencloud_root
+    )
+    disk_threshold = _build_disk_threshold(min_free_bytes, min_free_percent)
+
+    prerequisite_report = run_prerequisite_checks(
+        mode=parsed_arguments.mode,
+        disk_check_path=disk_check_path,
+        disk_threshold=disk_threshold,
+    )
+    if prerequisite_report.ok:
+        print(_format_prerequisite_success(prerequisite_report))
+        return EXIT_OK
+
+    sys.stderr.write(_format_prerequisite_failure(prerequisite_report) + "\n")
+    return EXIT_ERROR
+
+
 def main(command_line_arguments: list[str] | None = None) -> None:
     argument_parser = build_argument_parser()
     parsed_arguments = argument_parser.parse_args(command_line_arguments)
     if parsed_arguments.command == "validate":
         raise SystemExit(run_validate_command(parsed_arguments))
+    if parsed_arguments.command == "prereqs":
+        raise SystemExit(run_prereqs_command(parsed_arguments))
     raise SystemExit(EXIT_USAGE)
 
 

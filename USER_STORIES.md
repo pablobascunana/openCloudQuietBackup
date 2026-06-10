@@ -40,11 +40,11 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Comprobación ejecutable en modo “solo validar” (dry-run de prerequisitos).
-- [ ] Umbral de espacio libre configurable (absoluto o % del volumen).
-- [ ] Lista explícita de binarios o rutas faltantes.
+- [x] Comprobación ejecutable en modo “solo validar” (dry-run de prerequisitos).
+- [x] Umbral de espacio libre configurable (absoluto o % del volumen).
+- [x] Lista explícita de binarios o rutas faltantes.
 
-**Prioridad:** P0 · **MVP:** sí
+**Prioridad:** P0 · **MVP:** sí · **Estado:** implementada (`prereqs` CLI, US-002)
 
 ---
 

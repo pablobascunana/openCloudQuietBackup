@@ -42,7 +42,8 @@ Provide an **opinionated application for OpenCloud** that:
 | Story | Status |
 |-------|--------|
 | US-001 — Stack paths | Implemented |
-| US-002 onwards | Pending |
+| US-002 — Prerequisites | Implemented |
+| US-003 onwards | Pending |
 
 ---
 
@@ -99,13 +100,15 @@ Optional but useful:
 - User in the **`docker`** group or equivalent permissions (`docker ps` must work).
 - Read/write access to the OpenCloud root (`config/`, `data/`, `.env`).
 
-Environment variables supported today (US-001):
+Environment variables supported today:
 
 | Variable | Description |
 |----------|-------------|
 | `OCB_OPENCLOUD_ROOT` | Root containing `config/` and `data/`. |
 | `OCB_COMPOSE_DIR` | Compose project directory (default: root). |
 | `OCB_COMPOSE_FILE` | Explicit path to `docker-compose.yml` / `.yaml`. |
+| `OCB_MIN_FREE_BYTES` | Minimum free disk space (bytes) for `prereqs`. |
+| `OCB_MIN_FREE_PERCENT` | Minimum free disk space (percent 1–100) for `prereqs`. |
 
 ---
 
@@ -166,6 +169,27 @@ uv run opencloud-quiet-backup validate \
 
 On success, expect resolved absolute paths for `opencloud_root`, `config_dir`, `data_dir`, `compose_dir`, and `compose_file`.
 
+### Check host prerequisites (US-002)
+
+Dry-run check for Docker, Compose v2, required binaries (`tar`, `zstd` or `gzip`, `rsync` for restore), and optional disk space thresholds:
+
+```bash
+uv run opencloud-quiet-backup prereqs \
+  --opencloud-root /volume1/docker/opencloud
+
+# Restore mode (requires rsync)
+uv run opencloud-quiet-backup prereqs \
+  --opencloud-root /volume1/docker/opencloud \
+  --mode restore
+
+# Require at least 10 GiB free on the OpenCloud root volume
+uv run opencloud-quiet-backup prereqs \
+  --opencloud-root /volume1/docker/opencloud \
+  --min-free-bytes 10737418240
+```
+
+`--min-free-bytes` and `--min-free-percent` are mutually exclusive. Default disk check path is the resolved `opencloud_root` (override with `--disk-check-path`).
+
 ---
 
 ## Repository structure
@@ -182,11 +206,15 @@ openCloudQuietBackup/
 │   ├── __init__.py
 │   ├── __main__.py           # python -m opencloud_backup
 │   ├── cli.py                # CLI subcommands
-│   └── config.py             # US-001: paths and validation
+│   ├── config.py             # US-001: paths and validation
+│   ├── domain/               # US-002: prerequisite types
+│   └── adapters/             # US-002: host probes
 └── tests/
     ├── conftest.py           # Shared fixtures
     ├── test_cli.py
-    └── test_config.py
+    ├── test_cli_prereqs.py
+    ├── test_config.py
+    └── test_adapters_prerequisites.py
 ```
 
 ---
