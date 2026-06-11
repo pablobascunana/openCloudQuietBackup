@@ -14,6 +14,10 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 
 _BYTES_PER_GIBIBYTE = 1024**3
+DOCKER_PS_FAILURE_HINT = (
+    "Hint: add your user to the 'docker' group, verify /var/run/docker.sock permissions, "
+    "then re-login or restart your session."
+)
 
 
 def _path_from_environment_variable(environment_variable_name: str) -> Path | None:
@@ -67,44 +71,43 @@ def _build_disk_threshold(
 
 
 def _format_prerequisite_success(report: PrerequisiteReport) -> str:
-    lines = [f"Prerequisitos OK (modo: {report.mode.value}):"]
-    if report.missing_binaries or report.failed_commands:
-        lines.append("  Binarios y comandos: OK")
-    else:
-        binary_summary = "  Binarios: docker, tar, compresión (zstd o gzip)"
-        if report.mode != JobMode.BACKUP:
-            binary_summary += ", rsync"
-        lines.append(binary_summary)
-        lines.append("  Docker Compose: OK")
+    lines = [f"Prerequisites OK (mode: {report.mode.value}):"]
+    binary_summary = "  Binaries: docker, tar, compression (zstd or gzip)"
+    if report.mode != JobMode.BACKUP:
+        binary_summary += ", rsync"
+    lines.append(binary_summary)
+    lines.append("  Docker Compose: OK")
+    lines.append("  Docker daemon: OK")
+    lines.append("  Stack path access: OK")
     if report.disk is not None:
-        disk_line = (
-            f"  Disco {report.disk.path}: {_format_byte_size(report.disk.free_bytes)} libres"
-        )
+        disk_line = f"  Disk {report.disk.path}: {_format_byte_size(report.disk.free_bytes)} free"
         if report.disk.threshold is None:
-            disk_line += " (sin umbral)"
+            disk_line += " (no threshold)"
         else:
-            disk_line += " (umbral cumplido)"
+            disk_line += " (threshold met)"
         lines.append(disk_line)
     return "\n".join(lines)
 
 
 def _format_prerequisite_failure(report: PrerequisiteReport) -> str:
-    lines = ["Error de prerequisitos:"]
+    lines = ["Prerequisite error:"]
     if report.missing_binaries:
-        lines.append(f"  Binarios faltantes: {', '.join(report.missing_binaries)}")
+        lines.append(f"  Missing binaries: {', '.join(report.missing_binaries)}")
     if report.failed_commands:
-        lines.append(f"  Comandos fallidos: {', '.join(report.failed_commands)}")
+        lines.append(f"  Failed commands: {', '.join(report.failed_commands)}")
+        if "docker ps" in report.failed_commands:
+            lines.append(f"  {DOCKER_PS_FAILURE_HINT}")
     if report.disk is not None and not report.disk.ok and report.disk.threshold is not None:
         threshold = report.disk.threshold
         if threshold.kind == "bytes":
             lines.append(
-                f"  Disco {report.disk.path}: {_format_byte_size(report.disk.free_bytes)} libres; "
-                f"se requieren {_format_byte_size(threshold.value)}"
+                f"  Disk {report.disk.path}: {_format_byte_size(report.disk.free_bytes)} free; "
+                f"requires {_format_byte_size(threshold.value)}"
             )
         else:
             lines.append(
-                f"  Disco {report.disk.path}: {report.disk.free_percent:.1f}% libres; "
-                f"se requiere {threshold.value}%"
+                f"  Disk {report.disk.path}: {report.disk.free_percent:.1f}% free; "
+                f"requires {threshold.value}%"
             )
     return "\n".join(lines)
 
@@ -142,7 +145,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     prereqs_subparser = subcommand_parsers.add_parser(
         "prereqs",
-        help="Check host prerequisites (US-002): Docker, tools, disk space.",
+        help="Check host prerequisites (US-002, US-003): Docker, tools, path access, disk space.",
     )
     prereqs_subparser.add_argument(
         "--opencloud-root",
@@ -205,7 +208,7 @@ def run_validate_command(parsed_arguments: argparse.Namespace) -> int:
 def run_prereqs_command(parsed_arguments: argparse.Namespace) -> int:
     if parsed_arguments.opencloud_root is None:
         sys.stderr.write(
-            "Error: falta --opencloud-root o la variable de entorno OCB_OPENCLOUD_ROOT.\n"
+            "Error: --opencloud-root or OCB_OPENCLOUD_ROOT environment variable is required.\n"
         )
         return EXIT_USAGE
 
@@ -213,14 +216,14 @@ def run_prereqs_command(parsed_arguments: argparse.Namespace) -> int:
     min_free_percent: float | None = parsed_arguments.min_free_percent
     if min_free_bytes is not None and min_free_percent is not None:
         sys.stderr.write(
-            "Error: --min-free-bytes y --min-free-percent son excluyentes; indica solo uno.\n"
+            "Error: --min-free-bytes and --min-free-percent are mutually exclusive; specify only one.\n"
         )
         return EXIT_USAGE
 
     try:
         stack_paths = load_stack_paths(opencloud_root=parsed_arguments.opencloud_root)
     except ValidationError as validation_error:
-        sys.stderr.write(f"Error de configuración: {validation_error}\n")
+        sys.stderr.write(f"Configuration error: {validation_error}\n")
         return EXIT_ERROR
 
     disk_check_path = (
@@ -232,6 +235,7 @@ def run_prereqs_command(parsed_arguments: argparse.Namespace) -> int:
 
     prerequisite_report = run_prerequisite_checks(
         mode=parsed_arguments.mode,
+        stack_paths=stack_paths,
         disk_check_path=disk_check_path,
         disk_threshold=disk_threshold,
     )

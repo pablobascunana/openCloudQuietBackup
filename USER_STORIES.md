@@ -58,8 +58,8 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Mensaje claro si `docker ps` falla (usuario sin grupo `docker`, etc.).
-- [ ] En documentación: matriz recomendada usuario root vs usuario en grupo `docker`.
+- [x] Mensaje claro si `docker ps` falla (usuario sin grupo `docker`, etc.).
+- [x] En documentación: matriz recomendada usuario root vs usuario en grupo `docker`.
 
 **Prioridad:** P1 · **MVP:** sí (mínimo comprobación + docs)
 
@@ -428,6 +428,7 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 |----|----------|
 | US-001 | Rutas del stack |
 | US-002 | Prerequisitos |
+| US-003 | Autenticación / contexto de ejecución |
 | US-010 | Parar antes de backup |
 | US-011 | Tar canónico con metadatos |
 | US-012 | Arrancar tras backup |
