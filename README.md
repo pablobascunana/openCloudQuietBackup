@@ -43,7 +43,8 @@ Provide an **opinionated application for OpenCloud** that:
 |-------|--------|
 | US-001 — Stack paths | Implemented |
 | US-002 — Prerequisites | Implemented |
-| US-003 onwards | Pending |
+| US-003 — Execution context | Implemented |
+| US-010 onwards | Pending |
 
 ---
 
@@ -98,7 +99,29 @@ Optional but useful:
 ### NAS permissions (when testing against a real OpenCloud deployment)
 
 - User in the **`docker`** group or equivalent permissions (`docker ps` must work).
-- Read/write access to the OpenCloud root (`config/`, `data/`, `.env`).
+- Read access to `config/`, `data/`, and `.env` (if present).
+- Write access to `config/` and `data/` when running restore jobs (`prereqs --mode restore` or `all`).
+
+#### Root vs `docker` group (US-003)
+
+| Execution context | Docker daemon (`docker ps`) | Stack paths | Typical use |
+|-------------------|----------------------------|-------------|-------------|
+| **root** | Works if the socket is reachable | Full access if files are owned by root or world-readable/writable | Quick tests; not recommended for cron |
+| **User in `docker` group** | Works after re-login once added to the group | Needs read on backup; read+write on restore | **Recommended** for scheduled backups on a NAS |
+| **Regular user (no `docker`)** | `prereqs` fails with `docker ps` | May read stack paths but cannot stop/start the stack | Not supported |
+
+Add a dedicated user to the `docker` group on Linux:
+
+```bash
+sudo usermod -aG docker opencloud-backup
+# Log out and back in (or newgrp docker) before running prereqs
+```
+
+Verify with:
+
+```bash
+uv run opencloud-quiet-backup prereqs --opencloud-root /path/to/opencloud
+```
 
 Environment variables supported today:
 
@@ -169,9 +192,9 @@ uv run opencloud-quiet-backup validate \
 
 On success, expect resolved absolute paths for `opencloud_root`, `config_dir`, `data_dir`, `compose_dir`, and `compose_file`.
 
-### Check host prerequisites (US-002)
+### Check host prerequisites (US-002, US-003)
 
-Dry-run check for Docker, Compose v2, required binaries (`tar`, `zstd` or `gzip`, `rsync` for restore), and optional disk space thresholds:
+Dry-run check for Docker daemon access (`docker ps`), Compose v2, required binaries (`tar`, `zstd` or `gzip`, `rsync` for restore), stack path permissions, and optional disk space thresholds:
 
 ```bash
 uv run opencloud-quiet-backup prereqs \
@@ -298,9 +321,9 @@ From Cursor, the **Engram** MCP server exposes read and write (`mem_search`, `me
 
 ## Next development steps
 
-1. **US-002** — Prerequisite checks (`docker`, `tar`, free disk space, etc.).
-2. **US-010–US-012** — Backup flow (stop, canonical tar, start).
-3. **US-020–US-023** — Restore flow with prior snapshot and confirmation.
+1. **US-010–US-012** — Backup flow (stop, canonical tar, start).
+2. **US-020–US-023** — Restore flow with prior snapshot and confirmation.
+3. **US-031** — Configurable backup output directory.
 
 See the [MVP summary](./USER_STORIES.md#resumen-mvp-sugerido) in `USER_STORIES.md` for the full list.
 

@@ -49,3 +49,7 @@ def required_binaries(mode: JobMode) -> tuple[str, ...]:
     if mode in (JobMode.RESTORE, JobMode.ALL):
         return base_binaries + ("rsync",)
     return base_binaries
+
+
+def stack_paths_requiring_write_check(mode: JobMode) -> bool:
+    return mode in (JobMode.RESTORE, JobMode.ALL)

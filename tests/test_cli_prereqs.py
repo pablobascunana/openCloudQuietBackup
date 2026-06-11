@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from conftest import make_valid_stack_tree
 
-from opencloud_backup.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
+from opencloud_backup.cli import DOCKER_PS_FAILURE_HINT, EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
 from opencloud_backup.domain.prereqs import DiskCheckResult, DiskThreshold, JobMode, PrerequisiteReport
 
 
@@ -43,6 +43,22 @@ def _failed_report() -> PrerequisiteReport:
     )
 
 
+def _docker_ps_failed_report() -> PrerequisiteReport:
+    return PrerequisiteReport(
+        ok=False,
+        mode=JobMode.ALL,
+        missing_binaries=(),
+        failed_commands=("docker ps",),
+        disk=DiskCheckResult(
+            path=Path("/data"),
+            total_bytes=100 * 1024**3,
+            free_bytes=50 * 1024**3,
+            threshold=None,
+            ok=True,
+        ),
+    )
+
+
 def test_prereqs_missing_root_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as system_exit:
         main(["prereqs"])
@@ -60,7 +76,10 @@ def test_prereqs_happy_path_exit_0(capsys: pytest.CaptureFixture[str]) -> None:
         ):
             main(["prereqs", "--opencloud-root", str(opencloud_root)])
         assert system_exit.value.code == EXIT_OK
-        assert "Prerequisitos OK" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "Prerequisites OK" in output
+        assert "Docker daemon: OK" in output
+        assert "Stack path access: OK" in output
 
 
 def test_prereqs_failure_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
@@ -74,8 +93,41 @@ def test_prereqs_failure_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
             main(["prereqs", "--opencloud-root", str(opencloud_root)])
         assert system_exit.value.code == EXIT_ERROR
         standard_error = capsys.readouterr().err
-        assert "Error de prerequisitos" in standard_error
+        assert "Prerequisite error" in standard_error
+        assert "Missing binaries" in standard_error
         assert "rsync" in standard_error
+
+
+def test_prereqs_docker_ps_failure_shows_hint(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        with (
+            patch(
+                "opencloud_backup.cli.run_prerequisite_checks",
+                return_value=_docker_ps_failed_report(),
+            ),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(["prereqs", "--opencloud-root", str(opencloud_root)])
+        assert system_exit.value.code == EXIT_ERROR
+        standard_error = capsys.readouterr().err
+        assert "Failed commands: docker ps" in standard_error
+        assert DOCKER_PS_FAILURE_HINT in standard_error
+
+
+def test_prereqs_passes_stack_paths_to_checks() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        with (
+            patch("opencloud_backup.cli.run_prerequisite_checks", return_value=_ok_report()) as mock_checks,
+            pytest.raises(SystemExit),
+        ):
+            main(["prereqs", "--opencloud-root", str(opencloud_root)])
+        call_kwargs = mock_checks.call_args.kwargs
+        assert call_kwargs["stack_paths"].opencloud_root == opencloud_root.resolve()
+        assert call_kwargs["stack_paths"].config_dir == (opencloud_root / "config").resolve()
 
 
 def test_prereqs_mutually_exclusive_thresholds_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
@@ -95,7 +147,7 @@ def test_prereqs_mutually_exclusive_thresholds_exit_2(capsys: pytest.CaptureFixt
                 ]
             )
         assert system_exit.value.code == EXIT_USAGE
-        assert "excluyentes" in capsys.readouterr().err
+        assert "mutually exclusive" in capsys.readouterr().err
 
 
 def test_prereqs_env_min_free_bytes(
@@ -116,6 +168,7 @@ def test_prereqs_env_min_free_bytes(
         mock_checks.assert_called_once()
         call_kwargs = mock_checks.call_args.kwargs
         assert call_kwargs["disk_threshold"] == DiskThreshold(kind="bytes", value=1073741824)
+        assert "stack_paths" in call_kwargs
 
 
 def test_prereqs_config_error_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
@@ -124,4 +177,4 @@ def test_prereqs_config_error_exit_1(capsys: pytest.CaptureFixture[str]) -> None
         with pytest.raises(SystemExit) as system_exit:
             main(["prereqs", "--opencloud-root", str(opencloud_root)])
         assert system_exit.value.code == EXIT_ERROR
-        assert "Error de configuración" in capsys.readouterr().err
+        assert "Configuration error" in capsys.readouterr().err

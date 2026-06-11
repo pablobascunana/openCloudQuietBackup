@@ -5,6 +5,7 @@ from opencloud_backup.domain.prereqs import (
     JobMode,
     PrerequisiteReport,
     required_binaries,
+    stack_paths_requiring_write_check,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "JobMode",
     "PrerequisiteReport",
     "required_binaries",
+    "stack_paths_requiring_write_check",
 ]
