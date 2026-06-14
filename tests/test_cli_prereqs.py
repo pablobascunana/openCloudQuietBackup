@@ -178,3 +178,51 @@ def test_prereqs_config_error_exit_1(capsys: pytest.CaptureFixture[str]) -> None
             main(["prereqs", "--opencloud-root", str(opencloud_root)])
         assert system_exit.value.code == EXIT_ERROR
         assert "Configuration error" in capsys.readouterr().err
+
+
+def test_prereqs_passes_compose_flags_to_load_stack_paths() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        compose_dir = opencloud_root / "compose"
+        make_valid_stack_tree(opencloud_root)
+        compose_dir.mkdir()
+        custom_compose = compose_dir / "stack.yml"
+        custom_compose.write_text("services: {}\n", encoding="utf-8")
+        with (
+            patch("opencloud_backup.cli.run_prerequisite_checks", return_value=_ok_report()) as mock_checks,
+            pytest.raises(SystemExit),
+        ):
+            main(
+                [
+                    "prereqs",
+                    "--opencloud-root",
+                    str(opencloud_root),
+                    "--compose-dir",
+                    str(compose_dir),
+                    "--compose-file",
+                    "stack.yml",
+                ]
+            )
+        stack_paths = mock_checks.call_args.kwargs["stack_paths"]
+        assert stack_paths.compose_dir == compose_dir.resolve()
+        assert stack_paths.compose_file == custom_compose.resolve()
+
+
+def test_prereqs_compose_file_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        monkeypatch.setenv("OCB_OPENCLOUD_ROOT", str(opencloud_root))
+        monkeypatch.setenv("OCB_COMPOSE_DIR", str(opencloud_root))
+        with (
+            patch("opencloud_backup.cli.load_stack_paths") as mock_load,
+            patch("opencloud_backup.cli.run_prerequisite_checks", return_value=_ok_report()),
+            pytest.raises(SystemExit),
+        ):
+            main(["prereqs"])
+        mock_load.assert_called_once()
+        call_kwargs = mock_load.call_args.kwargs
+        assert call_kwargs["opencloud_root"] == opencloud_root
+        assert call_kwargs["compose_dir"] == opencloud_root
