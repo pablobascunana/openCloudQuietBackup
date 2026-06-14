@@ -44,7 +44,8 @@ Provide an **opinionated application for OpenCloud** that:
 | US-001 — Stack paths | Implemented |
 | US-002 — Prerequisites | Implemented |
 | US-003 — Execution context | Implemented |
-| US-010 onwards | Pending |
+| US-010 — Stop stack before backup | Implemented (stub: prereqs + down) |
+| US-011 onwards | Pending |
 
 ---
 
@@ -132,6 +133,7 @@ Environment variables supported today:
 | `OCB_COMPOSE_FILE` | Explicit path to `docker-compose.yml` / `.yaml`. |
 | `OCB_MIN_FREE_BYTES` | Minimum free disk space (bytes) for `prereqs`. |
 | `OCB_MIN_FREE_PERCENT` | Minimum free disk space (percent 1–100) for `prereqs`. |
+| `OCB_STOP_TIMEOUT` | Timeout in seconds for `docker compose down` in `backup` (default 180). |
 
 ---
 
@@ -212,6 +214,34 @@ uv run opencloud-quiet-backup prereqs \
 ```
 
 `--min-free-bytes` and `--min-free-percent` are mutually exclusive. Default disk check path is the resolved `opencloud_root` (override with `--disk-check-path`).
+
+`prereqs` accepts the same compose flags as `validate` (`--compose-dir`, `--compose-file`, `OCB_COMPOSE_DIR`, `OCB_COMPOSE_FILE`).
+
+### Stop stack before backup (US-010)
+
+Runs prerequisite checks for backup mode, then `docker compose down` with the resolved compose project directory and file:
+
+```bash
+uv run opencloud-quiet-backup backup \
+  --opencloud-root /volume1/docker/opencloud
+
+# Custom compose location and stop timeout (default 180s)
+uv run opencloud-quiet-backup backup \
+  --opencloud-root /volume1/docker/opencloud \
+  --compose-dir /volume1/docker/opencloud \
+  --stop-timeout 300
+```
+
+Stop phase timestamps are written to stderr in UTC ISO format, for example:
+
+```text
+[2026-06-14T10:15:30.123456+00:00] backup: stop phase started
+[2026-06-14T10:16:45.789012+00:00] backup: stop phase finished
+```
+
+If prerequisites fail, `down` is not executed. On compose failure, the command exits with code 1 and logs `backup: stop phase failed`.
+
+This subcommand is a **stub** for the full backup job (US-011 tar packaging and US-012 stack start will follow).
 
 ---
 
@@ -321,7 +351,7 @@ From Cursor, the **Engram** MCP server exposes read and write (`mem_search`, `me
 
 ## Next development steps
 
-1. **US-010–US-012** — Backup flow (stop, canonical tar, start).
+1. **US-011–US-012** — Tar packaging and stack start after backup.
 2. **US-020–US-023** — Restore flow with prior snapshot and confirmation.
 3. **US-031** — Configurable backup output directory.
 

@@ -77,9 +77,9 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Uso de `docker compose` con `--project-directory` y `-f` al fichero correcto.
-- [ ] Timeout configurable para la fase de parada; si falla, el job aborta sin dejar el estado indeterminado (log + código de salida ≠ 0).
-- [ ] Log con marca de tiempo de inicio y fin de parada.
+- [x] Uso de `docker compose` con `--project-directory` y `-f` al fichero correcto.
+- [x] Timeout configurable para la fase de parada; si falla, el job aborta sin dejar el estado indeterminado (log + código de salida ≠ 0).
+- [x] Log con marca de tiempo de inicio y fin de parada.
 
 **Prioridad:** P0 · **MVP:** sí
 
