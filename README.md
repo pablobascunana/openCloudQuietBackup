@@ -44,8 +44,9 @@ Provide an **opinionated application for OpenCloud** that:
 | US-001 — Stack paths | Implemented |
 | US-002 — Prerequisites | Implemented |
 | US-003 — Execution context | Implemented |
-| US-010 — Stop stack before backup | Implemented (stub: prereqs + down) |
-| US-011 onwards | Pending |
+| US-010 — Stop stack before backup | Implemented |
+| US-011 — Canonical tar archive | Implemented (prereqs + down + pack; no `up` yet — US-012) |
+| US-012 onwards | Pending |
 
 ---
 
@@ -134,6 +135,9 @@ Environment variables supported today:
 | `OCB_MIN_FREE_BYTES` | Minimum free disk space (bytes) for `prereqs`. |
 | `OCB_MIN_FREE_PERCENT` | Minimum free disk space (percent 1–100) for `prereqs`. |
 | `OCB_STOP_TIMEOUT` | Timeout in seconds for `docker compose down` in `backup` (default 180). |
+| `OCB_OUTPUT_DIR` | Directory for backup archives (default: `{opencloud_root}/backups`). |
+| `OCB_COMPRESSION` | Default compression for `backup` (`zstd`, `gzip`, or `none`). |
+| `OCB_PACK_TIMEOUT` | Timeout in seconds for the pack phase in `backup` (default: unlimited). |
 
 ---
 
@@ -217,31 +221,50 @@ uv run opencloud-quiet-backup prereqs \
 
 `prereqs` accepts the same compose flags as `validate` (`--compose-dir`, `--compose-file`, `OCB_COMPOSE_DIR`, `OCB_COMPOSE_FILE`).
 
-### Stop stack before backup (US-010)
+### Backup (US-010, US-011)
 
-Runs prerequisite checks for backup mode, then `docker compose down` with the resolved compose project directory and file:
+Runs prerequisite checks for backup mode, `docker compose down`, then creates a canonical tar archive under the output directory (default `{opencloud_root}/backups` — the directory must already exist and be writable).
 
 ```bash
+# Create the output directory once (not auto-created)
+mkdir -p /volume1/docker/opencloud/backups
+
 uv run opencloud-quiet-backup backup \
   --opencloud-root /volume1/docker/opencloud
 
-# Custom compose location and stop timeout (default 180s)
+# Custom output dir, compression, exclude .env, pack timeout
 uv run opencloud-quiet-backup backup \
   --opencloud-root /volume1/docker/opencloud \
-  --compose-dir /volume1/docker/opencloud \
+  --output-dir /volume1/backups/opencloud \
+  --compression zstd \
+  --no-env \
+  --pack-timeout 3600 \
   --stop-timeout 300
 ```
 
-Stop phase timestamps are written to stderr in UTC ISO format, for example:
+**Canonical archive format** (format version `1` in code — `ARCHIVE_FORMAT_VERSION`):
+
+| Item | Value |
+|------|--------|
+| Filename | `opencloud-YYYY-MM-DD_HHMMSS.tar.zst` (or `.tar.gz` / `.tar` for `gzip` / `none`) |
+| Internal paths | `opencloud/config`, `opencloud/data`, optional `opencloud/.env` |
+| Tar flags | `--xattrs --acls --numeric-owner --transform 's,^,opencloud/,'` |
+| `.env` | Included by default when the file exists; use `--no-env` to exclude |
+
+Phase timestamps are written to stderr in UTC ISO format, for example:
 
 ```text
 [2026-06-14T10:15:30.123456+00:00] backup: stop phase started
 [2026-06-14T10:16:45.789012+00:00] backup: stop phase finished
+[2026-06-14T10:16:46.000000+00:00] backup: pack phase started
+[2026-06-14T10:18:00.000000+00:00] backup: pack phase finished
 ```
 
-If prerequisites fail, `down` is not executed. On compose failure, the command exits with code 1 and logs `backup: stop phase failed`.
+On success, stdout reports `Backup completed successfully.` and the archive path.
 
-This subcommand is a **stub** for the full backup job (US-011 tar packaging and US-012 stack start will follow).
+If prerequisites fail, neither `down` nor pack runs. On compose or pack failure, the command exits with code 1 and logs the failed phase. Partial archive files are removed on pack failure (best-effort).
+
+**US-012** (`docker compose up -d` after backup) is not implemented yet — the stack stays stopped until you start it manually or US-012 lands.
 
 ---
 
@@ -351,9 +374,9 @@ From Cursor, the **Engram** MCP server exposes read and write (`mem_search`, `me
 
 ## Next development steps
 
-1. **US-011–US-012** — Tar packaging and stack start after backup.
+1. **US-012** — Stack start after backup (`docker compose up -d`).
 2. **US-020–US-023** — Restore flow with prior snapshot and confirmation.
-3. **US-031** — Configurable backup output directory.
+3. **US-031** — Auto-create output directory (today: must exist).
 
 See the [MVP summary](./USER_STORIES.md#resumen-mvp-sugerido) in `USER_STORIES.md` for the full list.
 

@@ -95,10 +95,10 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Empaquetado con las mismas garantías semánticas acordadas (`tar` con `--xattrs --acls --numeric-owner` o equivalente documentado).
-- [ ] Opción configurable: incluir o excluir `.env`.
-- [ ] Compresión configurable (`zstd` por defecto, `gzip`, sin comprimir).
-- [ ] Nombre de fichero y estructura interna del tar documentados y estables entre versiones de app (o versión de formato en metadatos).
+- [x] Empaquetado con las mismas garantías semánticas acordadas (`tar` con `--xattrs --acls --numeric-owner` o equivalente documentado).
+- [x] Opción configurable: incluir o excluir `.env`.
+- [x] Compresión configurable (`zstd` por defecto, `gzip`, sin comprimir).
+- [x] Nombre de fichero y estructura interna del tar documentados y estables entre versiones de app (o versión de formato en metadatos).
 
 **Prioridad:** P0 · **MVP:** sí
 

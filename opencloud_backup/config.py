@@ -8,7 +8,9 @@ __all__ = [
     "StackPaths",
     "ValidationError",
     "load_stack_paths",
+    "resolve_backup_output_dir",
     "resolve_compose_file",
+    "validate_backup_output_dir",
 ]
 
 
@@ -98,6 +100,33 @@ def resolve_compose_file(compose_directory: Path, compose_file: Path | None) -> 
         f"Neither «docker-compose.yml» nor «docker-compose.yaml» found in "
         f"{compose_directory}. Specify --compose-file or create one of those files."
     )
+
+
+def validate_backup_output_dir(output_dir: Path | str) -> Path:
+    try:
+        resolved_output_dir = Path(output_dir).expanduser().resolve()
+    except OSError as operating_system_error:
+        raise ValidationError(
+            f"Could not resolve output directory: {output_dir}. {operating_system_error}"
+        ) from operating_system_error
+    if not resolved_output_dir.exists():
+        raise ValidationError(f"Output directory does not exist: {resolved_output_dir}")
+    if not resolved_output_dir.is_dir():
+        raise ValidationError(
+            f"Output directory exists but is not a directory: {resolved_output_dir}"
+        )
+    if not os.access(resolved_output_dir, os.W_OK):
+        raise ValidationError(f"Output directory is not writable: {resolved_output_dir}")
+    return resolved_output_dir
+
+
+def resolve_backup_output_dir(opencloud_root: Path, output_dir: Path | str | None = None) -> Path:
+    from opencloud_backup.domain.archive import default_backup_output_dir
+
+    target_output_dir = (
+        default_backup_output_dir(opencloud_root) if output_dir is None else Path(output_dir)
+    )
+    return validate_backup_output_dir(target_output_dir)
 
 
 def load_stack_paths(
