@@ -8,7 +8,13 @@ import pytest
 
 from opencloud_backup.config import StackPaths
 from opencloud_backup.domain.archive import CompressionFormat
-from opencloud_backup.domain.errors import ArchiveCommandError, ComposeCommandError, PrerequisiteCheckError
+from opencloud_backup.domain.errors import (
+    ArchiveCommandError,
+    ComposeCommandError,
+    IntegrityError,
+    PrerequisiteCheckError,
+)
+from opencloud_backup.domain.integrity import IntegrityRecord, sidecar_path_for_archive
 from opencloud_backup.domain.prereqs import DiskCheckResult, DiskThreshold, JobMode, PrerequisiteReport
 from opencloud_backup.jobs.backup import _format_phase_log_line, run_backup_job
 
@@ -73,6 +79,34 @@ class FakeArchiveBuilder:
         if self.should_fail:
             raise ArchiveCommandError("tar create", 1, "pack failed")
         return self.archive_path
+
+
+class FakeFileHasher:
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.calls: list[Path] = []
+
+    def compute_sha256(self, path: Path) -> str:
+        self.calls.append(path)
+        if self.should_fail:
+            raise IntegrityError("hash failed")
+        return "a" * 64
+
+
+class FakeSidecarStore:
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.writes: list[tuple[Path, IntegrityRecord]] = []
+
+    def write(self, archive_path: Path, record: IntegrityRecord) -> Path:
+        if self.should_fail:
+            raise IntegrityError("sidecar write failed")
+        sidecar_path = sidecar_path_for_archive(archive_path)
+        self.writes.append((archive_path, record))
+        return sidecar_path
+
+    def read(self, sidecar_path: Path) -> IntegrityRecord:
+        raise IntegrityError("not implemented in backup tests")
 
 
 def _stack_paths(root: Path) -> StackPaths:
@@ -328,3 +362,162 @@ def test_prerequisite_check_error_carries_report() -> None:
             stderr_log=list.append,
         )
     assert error_info.value.report is failed_report
+
+
+def test_backup_without_write_integrity_skips_hash_phase() -> None:
+    stack_paths = _stack_paths(Path("/data/opencloud"))
+    fake_runner = FakeComposeRunner()
+    fake_hasher = FakeFileHasher()
+    log_lines: list[str] = []
+
+    with patch(
+        "opencloud_backup.jobs.backup.run_prerequisite_checks",
+        return_value=_ok_prereq_report(),
+    ):
+        run_backup_job(
+            **_job_kwargs(stack_paths),
+            compose_runner=fake_runner,
+            archive_builder=FakeArchiveBuilder(),
+            file_hasher=fake_hasher,
+            stderr_log=log_lines.append,
+        )
+
+    assert fake_hasher.calls == []
+    assert not any("hash phase" in line for line in log_lines)
+
+
+def test_backup_write_integrity_runs_hash_before_up(tmp_path: Path) -> None:
+    archive_path = tmp_path / "opencloud-2026-06-14_101530.tar.zst"
+    archive_path.write_bytes(b"archive-data")
+    stack_paths = _stack_paths(Path("/data/opencloud"))
+    fake_runner = FakeComposeRunner()
+    fake_hasher = FakeFileHasher()
+    call_order: list[str] = []
+
+    original_up = fake_runner.up
+
+    def tracked_up(stack_paths_arg: StackPaths, timeout_seconds: int) -> None:
+        call_order.append("up")
+        original_up(stack_paths_arg, timeout_seconds)
+
+    fake_runner.up = tracked_up  # type: ignore[method-assign]
+
+    original_compute = fake_hasher.compute_sha256
+
+    def tracked_hash(path: Path) -> str:
+        call_order.append("hash")
+        return original_compute(path)
+
+    fake_hasher.compute_sha256 = tracked_hash  # type: ignore[method-assign]
+
+    with patch(
+        "opencloud_backup.jobs.backup.run_prerequisite_checks",
+        return_value=_ok_prereq_report(),
+    ):
+        run_backup_job(
+            **_job_kwargs(stack_paths),
+            compose_runner=fake_runner,
+            archive_builder=FakeArchiveBuilder(archive_path=archive_path),
+            write_integrity=True,
+            file_hasher=fake_hasher,
+            sidecar_store=FakeSidecarStore(),
+        )
+
+    assert call_order == ["hash", "up"]
+
+
+def test_backup_hash_phase_logs_started_finished(tmp_path: Path) -> None:
+    archive_path = tmp_path / "opencloud-2026-06-14_101530.tar.zst"
+    archive_path.write_bytes(b"archive-data")
+    stack_paths = _stack_paths(Path("/data/opencloud"))
+    log_lines: list[str] = []
+
+    with patch(
+        "opencloud_backup.jobs.backup.run_prerequisite_checks",
+        return_value=_ok_prereq_report(),
+    ):
+        run_backup_job(
+            **_job_kwargs(stack_paths),
+            compose_runner=FakeComposeRunner(),
+            archive_builder=FakeArchiveBuilder(archive_path=archive_path),
+            write_integrity=True,
+            file_hasher=FakeFileHasher(),
+            sidecar_store=FakeSidecarStore(),
+            stderr_log=log_lines.append,
+        )
+
+    assert any(line.endswith("backup: hash phase started") for line in log_lines)
+    assert any(line.endswith("backup: hash phase finished") for line in log_lines)
+    pack_finished_index = next(i for i, line in enumerate(log_lines) if line.endswith("backup: pack phase finished"))
+    hash_started_index = next(i for i, line in enumerate(log_lines) if line.endswith("backup: hash phase started"))
+    up_started_index = next(i for i, line in enumerate(log_lines) if line.endswith("backup: up phase started"))
+    assert pack_finished_index < hash_started_index < up_started_index
+
+
+def test_backup_hash_failure_still_attempts_up() -> None:
+    stack_paths = _stack_paths(Path("/data/opencloud"))
+    fake_runner = FakeComposeRunner()
+    fake_hasher = FakeFileHasher(should_fail=True)
+
+    with (
+        patch(
+            "opencloud_backup.jobs.backup.run_prerequisite_checks",
+            return_value=_ok_prereq_report(),
+        ),
+        pytest.raises(IntegrityError),
+    ):
+        run_backup_job(
+            **_job_kwargs(stack_paths),
+            compose_runner=fake_runner,
+            archive_builder=FakeArchiveBuilder(),
+            write_integrity=True,
+            file_hasher=fake_hasher,
+            sidecar_store=FakeSidecarStore(),
+        )
+
+    assert len(fake_runner.up_calls) == 1
+
+
+def test_backup_hash_failure_raises_after_successful_up() -> None:
+    stack_paths = _stack_paths(Path("/data/opencloud"))
+
+    with (
+        patch(
+            "opencloud_backup.jobs.backup.run_prerequisite_checks",
+            return_value=_ok_prereq_report(),
+        ),
+        pytest.raises(IntegrityError, match="hash failed"),
+    ):
+        run_backup_job(
+            **_job_kwargs(stack_paths),
+            compose_runner=FakeComposeRunner(),
+            archive_builder=FakeArchiveBuilder(),
+            write_integrity=True,
+            file_hasher=FakeFileHasher(should_fail=True),
+            sidecar_store=FakeSidecarStore(),
+        )
+
+
+def test_backup_pack_failure_skips_hash_phase() -> None:
+    stack_paths = _stack_paths(Path("/data/opencloud"))
+    fake_hasher = FakeFileHasher()
+    log_lines: list[str] = []
+
+    with (
+        patch(
+            "opencloud_backup.jobs.backup.run_prerequisite_checks",
+            return_value=_ok_prereq_report(),
+        ),
+        pytest.raises(ArchiveCommandError),
+    ):
+        run_backup_job(
+            **_job_kwargs(stack_paths),
+            compose_runner=FakeComposeRunner(),
+            archive_builder=FakeArchiveBuilder(should_fail=True),
+            write_integrity=True,
+            file_hasher=fake_hasher,
+            stderr_log=log_lines.append,
+        )
+
+    assert fake_hasher.calls == []
+    assert not any("hash phase" in line for line in log_lines)

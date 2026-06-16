@@ -9,9 +9,18 @@ from opencloud_backup.adapters.docker_compose import SubprocessComposeRunner
 from opencloud_backup.adapters.prerequisites import run_prerequisite_checks
 from opencloud_backup.config import ValidationError, load_stack_paths, resolve_backup_output_dir
 from opencloud_backup.domain.archive import CompressionFormat
-from opencloud_backup.domain.errors import ArchiveCommandError, ComposeCommandError, PrerequisiteCheckError
+from opencloud_backup.domain.errors import (
+    ArchiveCommandError,
+    ComposeCommandError,
+    HashMismatchError,
+    IntegrityError,
+    PrerequisiteCheckError,
+    SidecarNotFoundError,
+)
+from opencloud_backup.domain.integrity import sidecar_path_for_archive
 from opencloud_backup.domain.prereqs import DiskThreshold, JobMode, PrerequisiteReport
 from opencloud_backup.jobs.backup import run_backup_job
+from opencloud_backup.jobs.integrity import verify_archive_integrity
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -75,6 +84,13 @@ def _compression_from_environment_variable() -> CompressionFormat | None:
     if compression_value is None or compression_value.strip() == "":
         return None
     return _parse_compression(compression_value.strip())
+
+
+def _truthy_env(environment_variable_name: str) -> bool:
+    environment_variable_value = os.environ.get(environment_variable_name)
+    if environment_variable_value is None or environment_variable_value.strip() == "":
+        return False
+    return environment_variable_value.strip().lower() in ("1", "true", "yes")
 
 
 def _build_disk_threshold(
@@ -293,6 +309,28 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path for disk space check (default: resolved output directory).",
     )
+    backup_subparser.add_argument(
+        "--write-hash",
+        action="store_true",
+        help="Write SHA-256 sidecar .sha256 after pack (US-013). Env: OCB_WRITE_HASH.",
+    )
+
+    verify_subparser = subcommand_parsers.add_parser(
+        "verify",
+        help="Verify backup archive integrity against .sha256 sidecar (US-013).",
+    )
+    verify_subparser.add_argument(
+        "--archive",
+        type=Path,
+        required=True,
+        help="Path to backup archive file.",
+    )
+    verify_subparser.add_argument(
+        "--sidecar",
+        type=Path,
+        default=None,
+        help="Path to sidecar file (default: {archive}.sha256).",
+    )
     return root_argument_parser
 
 
@@ -423,6 +461,7 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
     )
     disk_threshold = _build_disk_threshold(min_free_bytes, min_free_percent)
     include_env = not parsed_arguments.no_env
+    write_integrity = parsed_arguments.write_hash or _truthy_env("OCB_WRITE_HASH")
 
     try:
         archive_path = run_backup_job(
@@ -435,6 +474,7 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
             stop_timeout_seconds=stop_timeout_seconds,
             start_timeout_seconds=start_timeout_seconds,
             pack_timeout_seconds=pack_timeout_seconds,
+            write_integrity=write_integrity,
             compose_runner=SubprocessComposeRunner(),
         )
     except PrerequisiteCheckError as prerequisite_check_error:
@@ -456,9 +496,45 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
         if archive_command_error.stderr:
             sys.stderr.write(f"  {archive_command_error.stderr}\n")
         return EXIT_ERROR
+    except IntegrityError:
+        sys.stderr.write("Error de integridad: no se pudo registrar el hash del archivo de backup.\n")
+        return EXIT_ERROR
 
     print("Backup completed successfully.")
     print(f"  archive: {archive_path}")
+    if write_integrity:
+        print(f"  sidecar: {sidecar_path_for_archive(archive_path)}")
+    return EXIT_OK
+
+
+def run_verify_command(parsed_arguments: argparse.Namespace) -> int:
+    archive_path = parsed_arguments.archive.expanduser().resolve()
+    sidecar_path = (
+        parsed_arguments.sidecar.expanduser().resolve()
+        if parsed_arguments.sidecar is not None
+        else None
+    )
+
+    if not archive_path.is_file():
+        sys.stderr.write("Error: el archivo de backup no existe o no es accesible.\n")
+        return EXIT_ERROR
+
+    try:
+        verify_archive_integrity(archive_path, sidecar_path=sidecar_path)
+    except SidecarNotFoundError:
+        sys.stderr.write("Error de integridad: no se encontró el fichero sidecar .sha256.\n")
+        return EXIT_ERROR
+    except HashMismatchError:
+        sys.stderr.write("Error de integridad: el hash del archivo no coincide con el sidecar.\n")
+        return EXIT_ERROR
+    except IntegrityError as integrity_error:
+        sys.stderr.write(f"Error de integridad: {integrity_error}\n")
+        return EXIT_ERROR
+
+    resolved_sidecar = sidecar_path or sidecar_path_for_archive(archive_path)
+    print("Integridad verificada correctamente.")
+    print(f"  archive: {archive_path}")
+    print(f"  sidecar: {resolved_sidecar}")
     return EXIT_OK
 
 
@@ -471,6 +547,8 @@ def main(command_line_arguments: list[str] | None = None) -> None:
         raise SystemExit(run_prereqs_command(parsed_arguments))
     if parsed_arguments.command == "backup":
         raise SystemExit(run_backup_command(parsed_arguments))
+    if parsed_arguments.command == "verify":
+        raise SystemExit(run_verify_command(parsed_arguments))
     raise SystemExit(EXIT_USAGE)
 
 

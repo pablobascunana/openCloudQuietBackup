@@ -132,10 +132,10 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Fichero lado a lado `.sha256` o registro en base de datos / JSON de manifiesto.
-- [ ] Comando o acción “verificar hash” sobre un archivo existente.
+- [x] Fichero lado a lado `.sha256` (sidecar; sin base de datos ni JSON de manifiesto en MVP).
+- [x] Comando `verify` para verificar hash sobre un archivo existente.
 
-**Prioridad:** P1 · **MVP:** no (deseable pronto)
+**Prioridad:** P1 · **MVP:** no (deseable pronto) · **Estado:** implementado (sidecar opt-in con `--write-hash` / `OCB_WRITE_HASH`).
 
 ---
 
