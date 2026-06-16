@@ -21,6 +21,7 @@ from opencloud_backup.adapters.prerequisites import (
     run_prerequisite_checks,
 )
 from opencloud_backup.config import StackPaths
+from opencloud_backup.domain.archive import CompressionFormat
 from opencloud_backup.domain.prereqs import DiskThreshold, JobMode
 
 
@@ -275,7 +276,35 @@ def test_disk_percent_below_threshold() -> None:
     assert not disk_result.ok
 
 
-def test_gzip_only_compression_ok() -> None:
+def test_compression_none_skips_zstd_and_gzip() -> None:
+    which_map = _all_tools_which_map()
+    which_map["zstd"] = None
+    which_map["gzip"] = None
+    probe = _make_probe(which_map=which_map)
+    missing = check_binaries(JobMode.BACKUP, probe, compression=CompressionFormat.NONE)
+    assert "zstd" not in missing
+    assert "gzip" not in missing
+
+
+def test_compression_zstd_requires_zstd_only() -> None:
+    which_map = _all_tools_which_map()
+    which_map["zstd"] = None
+    which_map["gzip"] = "/usr/bin/gzip"
+    probe = _make_probe(which_map=which_map)
+    missing = check_binaries(JobMode.BACKUP, probe, compression=CompressionFormat.ZSTD)
+    assert missing == ("zstd",)
+
+
+def test_compression_gzip_requires_gzip_only() -> None:
+    which_map = _all_tools_which_map()
+    which_map["zstd"] = "/usr/bin/zstd"
+    which_map["gzip"] = None
+    probe = _make_probe(which_map=which_map)
+    missing = check_binaries(JobMode.BACKUP, probe, compression=CompressionFormat.GZIP)
+    assert missing == ("gzip",)
+
+
+def test_gzip_only_compression_ok_when_unspecified() -> None:
     which_map = _all_tools_which_map()
     which_map["zstd"] = None
     probe = _make_probe(which_map=which_map)
@@ -284,7 +313,7 @@ def test_gzip_only_compression_ok() -> None:
     assert "gzip" not in missing
 
 
-def test_no_compression_both_missing() -> None:
+def test_no_compression_both_missing_when_unspecified() -> None:
     which_map = _all_tools_which_map()
     which_map["zstd"] = None
     which_map["gzip"] = None

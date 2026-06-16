@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from opencloud_backup.config import StackPaths
+from opencloud_backup.domain.archive import CompressionFormat
 from opencloud_backup.domain.prereqs import (
     COMPRESSION_BINARIES,
     DiskCheckResult,
@@ -40,13 +41,23 @@ class HostProbe:
     disk_usage: Callable[[str | os.PathLike[str]], DiskUsageResult] = shutil.disk_usage
 
 
-def check_binaries(mode: JobMode, probe: HostProbe) -> tuple[str, ...]:
+def check_binaries(
+    mode: JobMode,
+    probe: HostProbe,
+    *,
+    compression: CompressionFormat | None = None,
+) -> tuple[str, ...]:
     missing_binary_names: list[str] = []
     for binary_name in required_binaries(mode):
         if probe.which(binary_name) is None:
             missing_binary_names.append(binary_name)
-    if not any(probe.which(compression_binary) for compression_binary in COMPRESSION_BINARIES):
-        missing_binary_names.extend(["zstd", "gzip"])
+    if compression is None:
+        if not any(probe.which(compression_binary) for compression_binary in COMPRESSION_BINARIES):
+            missing_binary_names.extend(["zstd", "gzip"])
+    elif compression == CompressionFormat.ZSTD and probe.which("zstd") is None:
+        missing_binary_names.append("zstd")
+    elif compression == CompressionFormat.GZIP and probe.which("gzip") is None:
+        missing_binary_names.append("gzip")
     return tuple(missing_binary_names)
 
 
@@ -134,10 +145,11 @@ def run_prerequisite_checks(
     stack_paths: StackPaths,
     disk_check_path: Path,
     disk_threshold: DiskThreshold | None = None,
+    compression: CompressionFormat | None = None,
     probe: HostProbe | None = None,
 ) -> PrerequisiteReport:
     host_probe = probe if probe is not None else HostProbe()
-    missing_binaries = check_binaries(mode, host_probe)
+    missing_binaries = check_binaries(mode, host_probe, compression=compression)
     failed_commands: list[str] = []
     failed_commands.extend(check_docker_compose(missing_binaries, host_probe))
     failed_commands.extend(check_docker_ps(missing_binaries, host_probe))

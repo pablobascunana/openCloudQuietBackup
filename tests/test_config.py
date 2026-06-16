@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 from conftest import make_valid_stack_tree
 
-from opencloud_backup.config import ValidationError, load_stack_paths, resolve_compose_file
+from opencloud_backup.config import (
+    ValidationError,
+    load_stack_paths,
+    resolve_backup_output_dir,
+    resolve_compose_file,
+    validate_backup_output_dir,
+)
 
 
 def test_prefers_yml_over_yaml_when_both_exist() -> None:
@@ -117,3 +123,59 @@ def test_readable_check() -> None:
                 load_stack_paths(opencloud_root)
         finally:
             os.chmod(opencloud_root / "config", 0o755)
+
+
+def test_validate_backup_output_dir_happy_path() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_dir = Path(temporary_directory) / "backups"
+        output_dir.mkdir()
+        assert validate_backup_output_dir(output_dir) == output_dir.resolve()
+
+
+def test_validate_backup_output_dir_missing() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        missing_dir = Path(temporary_directory) / "missing"
+        with pytest.raises(ValidationError, match="Output directory does not exist:"):
+            validate_backup_output_dir(missing_dir)
+
+
+def test_validate_backup_output_dir_not_a_directory() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_file = Path(temporary_directory) / "not-a-dir"
+        output_file.write_text("x", encoding="utf-8")
+        with pytest.raises(ValidationError, match="Output directory exists but is not a directory:"):
+            validate_backup_output_dir(output_file)
+
+
+def test_validate_backup_output_dir_not_writable() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_dir = Path(temporary_directory) / "backups"
+        output_dir.mkdir()
+        os.chmod(output_dir, 0o555)
+        try:
+            if os.access(output_dir, os.W_OK):
+                pytest.skip("root can write directories without permission in this environment")
+            with pytest.raises(ValidationError, match="Output directory is not writable:"):
+                validate_backup_output_dir(output_dir)
+        finally:
+            os.chmod(output_dir, 0o755)
+
+
+def test_resolve_backup_output_dir_default_under_root() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        backups_dir = opencloud_root / "backups"
+        backups_dir.mkdir()
+        resolved = resolve_backup_output_dir(opencloud_root.resolve())
+        assert resolved == backups_dir.resolve()
+
+
+def test_resolve_backup_output_dir_explicit_path() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        custom_output = Path(temporary_directory) / "custom-backups"
+        custom_output.mkdir()
+        resolved = resolve_backup_output_dir(opencloud_root.resolve(), custom_output)
+        assert resolved == custom_output.resolve()

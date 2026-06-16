@@ -7,8 +7,9 @@ from pathlib import Path
 
 from opencloud_backup.adapters.docker_compose import SubprocessComposeRunner
 from opencloud_backup.adapters.prerequisites import run_prerequisite_checks
-from opencloud_backup.config import ValidationError, load_stack_paths
-from opencloud_backup.domain.errors import ComposeCommandError, PrerequisiteCheckError
+from opencloud_backup.config import ValidationError, load_stack_paths, resolve_backup_output_dir
+from opencloud_backup.domain.archive import CompressionFormat
+from opencloud_backup.domain.errors import ArchiveCommandError, ComposeCommandError, PrerequisiteCheckError
 from opencloud_backup.domain.prereqs import DiskThreshold, JobMode, PrerequisiteReport
 from opencloud_backup.jobs.backup import run_backup_job
 
@@ -20,6 +21,7 @@ _BYTES_PER_GIBIBYTE = 1024**3
 DEFAULT_STOP_TIMEOUT_SECONDS = 180
 MIN_STOP_TIMEOUT_SECONDS = 1
 MAX_STOP_TIMEOUT_SECONDS = 3600
+MIN_PACK_TIMEOUT_SECONDS = 1
 DOCKER_PS_FAILURE_HINT = (
     "Hint: add your user to the 'docker' group, verify /var/run/docker.sock permissions, "
     "then re-login or restart your session."
@@ -59,6 +61,17 @@ def _format_byte_size(byte_count: int) -> str:
 
 def _parse_job_mode(mode_value: str) -> JobMode:
     return JobMode(mode_value)
+
+
+def _parse_compression(compression_value: str) -> CompressionFormat:
+    return CompressionFormat(compression_value)
+
+
+def _compression_from_environment_variable() -> CompressionFormat | None:
+    compression_value = os.environ.get("OCB_COMPRESSION")
+    if compression_value is None or compression_value.strip() == "":
+        return None
+    return _parse_compression(compression_value.strip())
 
 
 def _build_disk_threshold(
@@ -200,7 +213,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     backup_subparser = subcommand_parsers.add_parser(
         "backup",
-        help="Stop OpenCloud stack before backup (US-010): prereqs then docker compose down.",
+        help="Backup OpenCloud stack (US-010, US-011): prereqs, stop, pack canonical archive.",
     )
     backup_subparser.add_argument(
         "--opencloud-root",
@@ -229,6 +242,30 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "Env: OCB_STOP_TIMEOUT.",
     )
     backup_subparser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=_path_from_environment_variable("OCB_OUTPUT_DIR"),
+        help="Directory for backup archives (default: {opencloud_root}/backups). Env: OCB_OUTPUT_DIR.",
+    )
+    backup_subparser.add_argument(
+        "--compression",
+        type=_parse_compression,
+        choices=list(CompressionFormat),
+        default=_compression_from_environment_variable() or CompressionFormat.ZSTD,
+        help="Archive compression format (default: zstd). Env: OCB_COMPRESSION.",
+    )
+    backup_subparser.add_argument(
+        "--no-env",
+        action="store_true",
+        help="Exclude .env from the backup archive even when the file exists.",
+    )
+    backup_subparser.add_argument(
+        "--pack-timeout",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_PACK_TIMEOUT"),
+        help="Timeout in seconds for the pack phase (default: unlimited). Env: OCB_PACK_TIMEOUT.",
+    )
+    backup_subparser.add_argument(
         "--min-free-bytes",
         type=int,
         default=_optional_int_from_environment_variable("OCB_MIN_FREE_BYTES"),
@@ -244,7 +281,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--disk-check-path",
         type=Path,
         default=None,
-        help="Path for disk space check (default: resolved opencloud_root).",
+        help="Path for disk space check (default: resolved output directory).",
     )
     return root_argument_parser
 
@@ -342,11 +379,20 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
         )
         return EXIT_USAGE
 
+    pack_timeout_seconds: int | None = parsed_arguments.pack_timeout
+    if pack_timeout_seconds is not None and pack_timeout_seconds < MIN_PACK_TIMEOUT_SECONDS:
+        sys.stderr.write("Error: --pack-timeout must be at least 1 second.\n")
+        return EXIT_USAGE
+
     try:
         stack_paths = load_stack_paths(
             opencloud_root=parsed_arguments.opencloud_root,
             compose_dir=parsed_arguments.compose_dir,
             compose_file=parsed_arguments.compose_file,
+        )
+        output_dir = resolve_backup_output_dir(
+            stack_paths.opencloud_root,
+            parsed_arguments.output_dir,
         )
     except ValidationError as validation_error:
         sys.stderr.write(f"Configuration error: {validation_error}\n")
@@ -355,16 +401,21 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
     disk_check_path = (
         parsed_arguments.disk_check_path.expanduser().resolve()
         if parsed_arguments.disk_check_path is not None
-        else stack_paths.opencloud_root
+        else output_dir
     )
     disk_threshold = _build_disk_threshold(min_free_bytes, min_free_percent)
+    include_env = not parsed_arguments.no_env
 
     try:
-        run_backup_job(
+        archive_path = run_backup_job(
             stack_paths=stack_paths,
+            output_dir=output_dir,
+            compression=parsed_arguments.compression,
+            include_env=include_env,
             disk_check_path=disk_check_path,
             disk_threshold=disk_threshold,
             stop_timeout_seconds=stop_timeout_seconds,
+            pack_timeout_seconds=pack_timeout_seconds,
             compose_runner=SubprocessComposeRunner(),
         )
     except PrerequisiteCheckError as prerequisite_check_error:
@@ -378,8 +429,17 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
         if compose_command_error.stderr:
             sys.stderr.write(f"  {compose_command_error.stderr}\n")
         return EXIT_ERROR
+    except ArchiveCommandError as archive_command_error:
+        sys.stderr.write(
+            f"Backup error: {archive_command_error.command_label} "
+            f"(exit {archive_command_error.return_code})\n"
+        )
+        if archive_command_error.stderr:
+            sys.stderr.write(f"  {archive_command_error.stderr}\n")
+        return EXIT_ERROR
 
-    print("Backup stop phase completed successfully.")
+    print("Backup completed successfully.")
+    print(f"  archive: {archive_path}")
     return EXIT_OK
 
 
