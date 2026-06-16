@@ -21,6 +21,7 @@ from opencloud_backup.domain.integrity import sidecar_path_for_archive
 from opencloud_backup.domain.prereqs import DiskThreshold, JobMode, PrerequisiteReport
 from opencloud_backup.jobs.backup import run_backup_job
 from opencloud_backup.jobs.integrity import verify_archive_integrity
+from opencloud_backup.jobs.restore import run_restore_job
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -315,6 +316,55 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Write SHA-256 sidecar .sha256 after pack (US-013). Env: OCB_WRITE_HASH.",
     )
 
+    restore_subparser = subcommand_parsers.add_parser(
+        "restore",
+        help="Restore OpenCloud stack (US-020): prereqs, stop stack before restore phases.",
+    )
+    restore_subparser.add_argument(
+        "--opencloud-root",
+        type=Path,
+        default=_path_from_environment_variable("OCB_OPENCLOUD_ROOT"),
+        help="Root with config/ and data/ (or OCB_OPENCLOUD_ROOT env var).",
+    )
+    restore_subparser.add_argument(
+        "--compose-dir",
+        type=Path,
+        default=_path_from_environment_variable("OCB_COMPOSE_DIR"),
+        help="Compose project directory (default: same as --opencloud-root). Env: OCB_COMPOSE_DIR.",
+    )
+    restore_subparser.add_argument(
+        "--compose-file",
+        type=Path,
+        default=_path_from_environment_variable("OCB_COMPOSE_FILE"),
+        help="Explicit path to docker-compose.yml/.yaml (relative to --compose-dir). "
+        "If omitted, searched under --compose-dir. Env: OCB_COMPOSE_FILE.",
+    )
+    restore_subparser.add_argument(
+        "--stop-timeout",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_STOP_TIMEOUT") or DEFAULT_STOP_TIMEOUT_SECONDS,
+        help=f"Timeout in seconds for docker compose down (default: {DEFAULT_STOP_TIMEOUT_SECONDS}). "
+        "Env: OCB_STOP_TIMEOUT.",
+    )
+    restore_subparser.add_argument(
+        "--min-free-bytes",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_MIN_FREE_BYTES"),
+        help="Minimum free disk space in bytes. Env: OCB_MIN_FREE_BYTES.",
+    )
+    restore_subparser.add_argument(
+        "--min-free-percent",
+        type=float,
+        default=_optional_float_from_environment_variable("OCB_MIN_FREE_PERCENT"),
+        help="Minimum free disk space as percent of volume (1-100). Env: OCB_MIN_FREE_PERCENT.",
+    )
+    restore_subparser.add_argument(
+        "--disk-check-path",
+        type=Path,
+        default=None,
+        help="Path for disk space check (default: resolved opencloud_root).",
+    )
+
     verify_subparser = subcommand_parsers.add_parser(
         "verify",
         help="Verify backup archive integrity against .sha256 sidecar (US-013).",
@@ -507,6 +557,73 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
+    if parsed_arguments.opencloud_root is None:
+        sys.stderr.write(
+            "Error: --opencloud-root or OCB_OPENCLOUD_ROOT environment variable is required.\n"
+        )
+        return EXIT_USAGE
+
+    min_free_bytes: int | None = parsed_arguments.min_free_bytes
+    min_free_percent: float | None = parsed_arguments.min_free_percent
+    if min_free_bytes is not None and min_free_percent is not None:
+        sys.stderr.write(
+            "Error: --min-free-bytes and --min-free-percent are mutually exclusive; specify only one.\n"
+        )
+        return EXIT_USAGE
+
+    stop_timeout_seconds: int = parsed_arguments.stop_timeout
+    if not MIN_STOP_TIMEOUT_SECONDS <= stop_timeout_seconds <= MAX_STOP_TIMEOUT_SECONDS:
+        sys.stderr.write(
+            f"Error: --stop-timeout must be between {MIN_STOP_TIMEOUT_SECONDS} and "
+            f"{MAX_STOP_TIMEOUT_SECONDS} seconds.\n"
+        )
+        return EXIT_USAGE
+
+    try:
+        stack_paths = load_stack_paths(
+            opencloud_root=parsed_arguments.opencloud_root,
+            compose_dir=parsed_arguments.compose_dir,
+            compose_file=parsed_arguments.compose_file,
+        )
+    except ValidationError as validation_error:
+        sys.stderr.write(f"Configuration error: {validation_error}\n")
+        return EXIT_ERROR
+
+    disk_check_path = (
+        parsed_arguments.disk_check_path.expanduser().resolve()
+        if parsed_arguments.disk_check_path is not None
+        else stack_paths.opencloud_root
+    )
+    disk_threshold = _build_disk_threshold(min_free_bytes, min_free_percent)
+
+    try:
+        run_restore_job(
+            stack_paths=stack_paths,
+            disk_check_path=disk_check_path,
+            disk_threshold=disk_threshold,
+            stop_timeout_seconds=stop_timeout_seconds,
+            compose_runner=SubprocessComposeRunner(),
+        )
+    except PrerequisiteCheckError as prerequisite_check_error:
+        sys.stderr.write(_format_prerequisite_failure(prerequisite_check_error.report) + "\n")
+        return EXIT_ERROR
+    except ComposeCommandError as compose_command_error:
+        sys.stderr.write(
+            f"Restore error: {compose_command_error.command_label} "
+            f"(exit {compose_command_error.return_code})\n"
+        )
+        if compose_command_error.stderr:
+            sys.stderr.write(f"  {compose_command_error.stderr}\n")
+        return EXIT_ERROR
+
+    print(
+        "Stack parado correctamente. Las fases de restauración "
+        "(snapshot, extracción, rsync) están pendientes."
+    )
+    return EXIT_OK
+
+
 def run_verify_command(parsed_arguments: argparse.Namespace) -> int:
     archive_path = parsed_arguments.archive.expanduser().resolve()
     sidecar_path = (
@@ -547,6 +664,8 @@ def main(command_line_arguments: list[str] | None = None) -> None:
         raise SystemExit(run_prereqs_command(parsed_arguments))
     if parsed_arguments.command == "backup":
         raise SystemExit(run_backup_command(parsed_arguments))
+    if parsed_arguments.command == "restore":
+        raise SystemExit(run_restore_command(parsed_arguments))
     if parsed_arguments.command == "verify":
         raise SystemExit(run_verify_command(parsed_arguments))
     raise SystemExit(EXIT_USAGE)
