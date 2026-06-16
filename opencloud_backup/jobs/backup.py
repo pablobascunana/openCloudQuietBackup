@@ -28,6 +28,7 @@ def run_backup_job(
     disk_check_path: Path,
     disk_threshold: DiskThreshold | None = None,
     stop_timeout_seconds: int,
+    start_timeout_seconds: int,
     pack_timeout_seconds: int | None = None,
     compose_runner: ComposeRunner | None = None,
     archive_builder: ArchiveBuilder | None = None,
@@ -53,27 +54,64 @@ def run_backup_job(
         raise PrerequisiteCheckError(prerequisite_report)
 
     runner = compose_runner if compose_runner is not None else SubprocessComposeRunner()
-    log_line(_format_phase_log_line("backup: stop phase started"))
-    try:
-        runner.down(stack_paths, stop_timeout_seconds)
-    except ComposeCommandError:
-        log_line(_format_phase_log_line("backup: stop phase failed"))
-        raise
-    log_line(_format_phase_log_line("backup: stop phase finished"))
+    pack_error: ArchiveCommandError | None = None
+    up_error: ComposeCommandError | None = None
+    archive_path: Path | None = None
+    stack_stopped = False
 
-    packer = archive_builder if archive_builder is not None else SubprocessArchiveBuilder()
-    log_line(_format_phase_log_line("backup: pack phase started"))
     try:
-        archive_path = packer.create_backup_archive(
-            stack_paths,
-            output_dir=output_dir,
-            compression=compression,
-            include_env=include_env,
-            pack_timeout_seconds=pack_timeout_seconds,
-            archive_timestamp=timestamp,
-        )
-    except ArchiveCommandError:
-        log_line(_format_phase_log_line("backup: pack phase failed"))
-        raise
-    log_line(_format_phase_log_line("backup: pack phase finished"))
+        log_line(_format_phase_log_line("backup: stop phase started"))
+        try:
+            runner.down(stack_paths, stop_timeout_seconds)
+        except ComposeCommandError:
+            log_line(_format_phase_log_line("backup: stop phase failed"))
+            raise
+        stack_stopped = True
+        log_line(_format_phase_log_line("backup: stop phase finished"))
+
+        packer = archive_builder if archive_builder is not None else SubprocessArchiveBuilder()
+        log_line(_format_phase_log_line("backup: pack phase started"))
+        try:
+            archive_path = packer.create_backup_archive(
+                stack_paths,
+                output_dir=output_dir,
+                compression=compression,
+                include_env=include_env,
+                pack_timeout_seconds=pack_timeout_seconds,
+                archive_timestamp=timestamp,
+            )
+        except ArchiveCommandError as pack_error_candidate:
+            pack_error = pack_error_candidate
+            log_line(_format_phase_log_line("backup: pack phase failed"))
+        else:
+            log_line(_format_phase_log_line("backup: pack phase finished"))
+    finally:
+        if stack_stopped:
+            log_line(_format_phase_log_line("backup: up phase started"))
+            try:
+                runner.up(stack_paths, start_timeout_seconds)
+            except ComposeCommandError as up_error_candidate:
+                up_error = up_error_candidate
+                log_line(_format_phase_log_line("backup: up phase failed"))
+            else:
+                log_line(_format_phase_log_line("backup: up phase finished"))
+
+                log_line(_format_phase_log_line("backup: ps phase started"))
+                try:
+                    ps_output = runner.ps(stack_paths)
+                except ComposeCommandError:
+                    log_line(_format_phase_log_line("backup: ps phase failed"))
+                else:
+                    log_line(_format_phase_log_line("backup: ps phase finished"))
+                    if stderr_log is not None:
+                        stderr_log(ps_output)
+                    else:
+                        sys.stderr.write(ps_output)
+
+    if up_error is not None:
+        raise up_error
+    if pack_error is not None:
+        # If packing failed but `up` succeeded, we end with an archive error with the stack online.
+        raise pack_error
+    assert archive_path is not None
     return archive_path

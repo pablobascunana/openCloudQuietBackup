@@ -135,6 +135,7 @@ Environment variables supported today:
 | `OCB_MIN_FREE_BYTES` | Minimum free disk space (bytes) for `prereqs`. |
 | `OCB_MIN_FREE_PERCENT` | Minimum free disk space (percent 1–100) for `prereqs`. |
 | `OCB_STOP_TIMEOUT` | Timeout in seconds for `docker compose down` in `backup` (default 180). |
+| `OCB_START_TIMEOUT` | Timeout in seconds for `docker compose up -d` in `backup` (default 180). |
 | `OCB_OUTPUT_DIR` | Directory for backup archives (default: `{opencloud_root}/backups`). |
 | `OCB_COMPRESSION` | Default compression for `backup` (`zstd`, `gzip`, or `none`). |
 | `OCB_PACK_TIMEOUT` | Timeout in seconds for the pack phase in `backup` (default: unlimited). |
@@ -221,9 +222,9 @@ uv run opencloud-quiet-backup prereqs \
 
 `prereqs` accepts the same compose flags as `validate` (`--compose-dir`, `--compose-file`, `OCB_COMPOSE_DIR`, `OCB_COMPOSE_FILE`).
 
-### Backup (US-010, US-011)
+### Backup (US-010, US-011, US-012)
 
-Runs prerequisite checks for backup mode, `docker compose down`, then creates a canonical tar archive under the output directory (default `{opencloud_root}/backups` — the directory must already exist and be writable).
+Runs prerequisite checks for backup mode, `docker compose down`, creates a canonical tar archive under the output directory (default `{opencloud_root}/backups` — the directory must already exist and be writable), then starts the stack again with `docker compose up -d` and dumps its status with `docker ps` (best-effort).
 
 ```bash
 # Create the output directory once (not auto-created)
@@ -239,7 +240,8 @@ uv run opencloud-quiet-backup backup \
   --compression zstd \
   --no-env \
   --pack-timeout 3600 \
-  --stop-timeout 300
+  --stop-timeout 300 \
+  --start-timeout 300
 ```
 
 **Canonical archive format** (format version `1` in code — `ARCHIVE_FORMAT_VERSION`):
@@ -258,13 +260,17 @@ Phase timestamps are written to stderr in UTC ISO format, for example:
 [2026-06-14T10:16:45.789012+00:00] backup: stop phase finished
 [2026-06-14T10:16:46.000000+00:00] backup: pack phase started
 [2026-06-14T10:18:00.000000+00:00] backup: pack phase finished
+[2026-06-14T10:18:05.000000+00:00] backup: up phase started
+[2026-06-14T10:18:20.000000+00:00] backup: up phase finished
+[2026-06-14T10:18:20.500000+00:00] backup: ps phase started
+[2026-06-14T10:18:20.600000+00:00] backup: ps phase finished
 ```
 
 On success, stdout reports `Backup completed successfully.` and the archive path.
 
 If prerequisites fail, neither `down` nor pack runs. On compose or pack failure, the command exits with code 1 and logs the failed phase. Partial archive files are removed on pack failure (best-effort).
 
-**US-012** (`docker compose up -d` after backup) is not implemented yet — the stack stays stopped until you start it manually or US-012 lands.
+US-012 policy: if `docker compose down` succeeds, the job always attempts `docker compose up -d` (even if `pack` fails). If pack fails but `up` succeeds, the command exits with code 1 but the stack ends up online.
 
 ---
 

@@ -21,6 +21,9 @@ _BYTES_PER_GIBIBYTE = 1024**3
 DEFAULT_STOP_TIMEOUT_SECONDS = 180
 MIN_STOP_TIMEOUT_SECONDS = 1
 MAX_STOP_TIMEOUT_SECONDS = 3600
+DEFAULT_START_TIMEOUT_SECONDS = 180
+MIN_START_TIMEOUT_SECONDS = 1
+MAX_START_TIMEOUT_SECONDS = 3600
 MIN_PACK_TIMEOUT_SECONDS = 1
 DOCKER_PS_FAILURE_HINT = (
     "Hint: add your user to the 'docker' group, verify /var/run/docker.sock permissions, "
@@ -242,6 +245,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "Env: OCB_STOP_TIMEOUT.",
     )
     backup_subparser.add_argument(
+        "--start-timeout",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_START_TIMEOUT") or DEFAULT_START_TIMEOUT_SECONDS,
+        help=f"Timeout in seconds for docker compose up -d (default: {DEFAULT_START_TIMEOUT_SECONDS}). "
+        "Env: OCB_START_TIMEOUT.",
+    )
+    backup_subparser.add_argument(
         "--output-dir",
         type=Path,
         default=_path_from_environment_variable("OCB_OUTPUT_DIR"),
@@ -379,6 +389,14 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
         )
         return EXIT_USAGE
 
+    start_timeout_seconds: int = parsed_arguments.start_timeout
+    if not MIN_START_TIMEOUT_SECONDS <= start_timeout_seconds <= MAX_START_TIMEOUT_SECONDS:
+        sys.stderr.write(
+            f"Error: --start-timeout debe estar entre {MIN_START_TIMEOUT_SECONDS} y "
+            f"{MAX_START_TIMEOUT_SECONDS} segundos.\n"
+        )
+        return EXIT_USAGE
+
     pack_timeout_seconds: int | None = parsed_arguments.pack_timeout
     if pack_timeout_seconds is not None and pack_timeout_seconds < MIN_PACK_TIMEOUT_SECONDS:
         sys.stderr.write("Error: --pack-timeout must be at least 1 second.\n")
@@ -415,6 +433,7 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
             disk_check_path=disk_check_path,
             disk_threshold=disk_threshold,
             stop_timeout_seconds=stop_timeout_seconds,
+            start_timeout_seconds=start_timeout_seconds,
             pack_timeout_seconds=pack_timeout_seconds,
             compose_runner=SubprocessComposeRunner(),
         )
