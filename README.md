@@ -47,6 +47,7 @@ Provide an **opinionated application for OpenCloud** that:
 | US-010 — Stop stack before backup | Implemented |
 | US-011 — Canonical tar archive | Implemented (prereqs + down + pack; no `up` yet — US-012) |
 | US-012 onwards | Pending |
+| US-013 — Archive integrity (SHA-256 sidecar) | Implemented |
 
 ---
 
@@ -139,6 +140,7 @@ Environment variables supported today:
 | `OCB_OUTPUT_DIR` | Directory for backup archives (default: `{opencloud_root}/backups`). |
 | `OCB_COMPRESSION` | Default compression for `backup` (`zstd`, `gzip`, or `none`). |
 | `OCB_PACK_TIMEOUT` | Timeout in seconds for the pack phase in `backup` (default: unlimited). |
+| `OCB_WRITE_HASH` | When `1`, `true`, or `yes` (case-insensitive), enable SHA-256 sidecar write on `backup` (same as `--write-hash`). |
 
 ---
 
@@ -271,6 +273,53 @@ On success, stdout reports `Backup completed successfully.` and the archive path
 If prerequisites fail, neither `down` nor pack runs. On compose or pack failure, the command exits with code 1 and logs the failed phase. Partial archive files are removed on pack failure (best-effort).
 
 US-012 policy: if `docker compose down` succeeds, the job always attempts `docker compose up -d` (even if `pack` fails). If pack fails but `up` succeeds, the command exits with code 1 but the stack ends up online.
+
+### Archive integrity (US-013)
+
+Optional SHA-256 integrity via a **sidecar file** next to the archive: `{archive_filename}.sha256` (literal suffix append, e.g. `opencloud-2026-06-14_101530.tar.zst.sha256`).
+
+**Sidecar format** (UTF-8, GNU-compatible line 1 + comment metadata):
+
+```text
+a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3  opencloud-2026-06-14_101530.tar.zst
+# format_version=1
+# size_bytes=1048576
+# recorded_at=2026-06-14T10:15:30+00:00
+# archive_format_version=1
+```
+
+Line 1 uses exactly **two spaces** between the lowercase hex digest and the archive basename. GNU `sha256sum -c` accepts the file when run from the directory containing the archive:
+
+```bash
+cd /volume1/docker/opencloud/backups
+sha256sum -c opencloud-2026-06-14_101530.tar.zst.sha256
+```
+
+**Opt-in on backup** — hash runs after successful pack while the stack is still stopped (extends downtime on large archives):
+
+```bash
+uv run opencloud-quiet-backup backup \
+  --opencloud-root /volume1/docker/opencloud \
+  --write-hash
+```
+
+Or set `OCB_WRITE_HASH=1` (or `true` / `yes`). On success, stdout includes `sidecar: {path}` in addition to the archive path. Phase logs on stderr: `backup: hash phase started` / `finished` / `failed` (English, UTC timestamps).
+
+If the hash phase fails, the archive file is kept, `up` is still attempted (US-012), and the command exits with code 1.
+
+**Verify** an existing archive against its sidecar (no Docker or stack paths required):
+
+```bash
+uv run opencloud-quiet-backup verify \
+  --archive /volume1/docker/opencloud/backups/opencloud-2026-06-14_101530.tar.zst
+
+# Optional explicit sidecar path
+uv run opencloud-quiet-backup verify \
+  --archive /path/to/archive.tar.zst \
+  --sidecar /path/to/custom.sha256
+```
+
+**Retention (US-030):** when deleting old backups, remove the paired sidecar `{archive}.sha256` together with the archive file.
 
 ---
 

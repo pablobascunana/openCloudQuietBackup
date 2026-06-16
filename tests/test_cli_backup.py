@@ -10,7 +10,12 @@ from conftest import make_backup_output_dir, make_valid_stack_tree
 from opencloud_backup.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
 from opencloud_backup.config import StackPaths
 from opencloud_backup.domain.archive import CompressionFormat
-from opencloud_backup.domain.errors import ArchiveCommandError, ComposeCommandError, PrerequisiteCheckError
+from opencloud_backup.domain.errors import (
+    ArchiveCommandError,
+    ComposeCommandError,
+    IntegrityError,
+    PrerequisiteCheckError,
+)
 from opencloud_backup.domain.prereqs import DiskCheckResult, JobMode, PrerequisiteReport
 
 
@@ -290,3 +295,58 @@ def test_backup_invalid_start_timeout_exit_2(capsys: pytest.CaptureFixture[str])
             main(["backup", "--opencloud-root", str(opencloud_root), "--start-timeout", "0"])
         assert system_exit.value.code == EXIT_USAGE
         assert "start-timeout" in capsys.readouterr().err
+
+
+def test_backup_write_hash_flag_enables_integrity() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=Path("/x.tar.zst")) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root), "--write-hash"])
+        assert mock_job.call_args.kwargs["write_integrity"] is True
+
+
+def test_backup_ocb_write_hash_env_enables_integrity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        monkeypatch.setenv("OCB_OPENCLOUD_ROOT", str(opencloud_root))
+        monkeypatch.setenv("OCB_WRITE_HASH", "true")
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=Path("/x.tar.zst")) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(["backup"])
+        assert mock_job.call_args.kwargs["write_integrity"] is True
+
+
+def test_backup_write_hash_success_prints_sidecar_path(capsys: pytest.CaptureFixture[str]) -> None:
+    archive_path = Path("/backups/opencloud-2026-06-14_101530.tar.zst")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=archive_path),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root), "--write-hash"])
+        assert system_exit.value.code == EXIT_OK
+        captured = capsys.readouterr()
+        assert f"sidecar: {archive_path}.sha256" in captured.out
+
+
+def test_backup_integrity_failure_exit_1_spanish_message(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        with (
+            patch(
+                "opencloud_backup.cli.run_backup_job",
+                side_effect=IntegrityError("hash failed"),
+            ),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root), "--write-hash"])
+        assert system_exit.value.code == EXIT_ERROR
+        assert "no se pudo registrar el hash del archivo de backup" in capsys.readouterr().err

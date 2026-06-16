@@ -7,11 +7,18 @@ from pathlib import Path
 
 from opencloud_backup.adapters.archive import ArchiveBuilder, SubprocessArchiveBuilder
 from opencloud_backup.adapters.docker_compose import ComposeRunner, SubprocessComposeRunner
+from opencloud_backup.adapters.integrity import FileHasher, SidecarStore
 from opencloud_backup.adapters.prerequisites import HostProbe, run_prerequisite_checks
 from opencloud_backup.config import StackPaths
 from opencloud_backup.domain.archive import CompressionFormat
-from opencloud_backup.domain.errors import ArchiveCommandError, ComposeCommandError, PrerequisiteCheckError
+from opencloud_backup.domain.errors import (
+    ArchiveCommandError,
+    ComposeCommandError,
+    IntegrityError,
+    PrerequisiteCheckError,
+)
 from opencloud_backup.domain.prereqs import DiskThreshold, JobMode
+from opencloud_backup.jobs.integrity import write_archive_integrity
 
 
 def _format_phase_log_line(message: str, *, now: datetime | None = None) -> str:
@@ -30,8 +37,11 @@ def run_backup_job(
     stop_timeout_seconds: int,
     start_timeout_seconds: int,
     pack_timeout_seconds: int | None = None,
+    write_integrity: bool = False,
     compose_runner: ComposeRunner | None = None,
     archive_builder: ArchiveBuilder | None = None,
+    file_hasher: FileHasher | None = None,
+    sidecar_store: SidecarStore | None = None,
     stderr_log: Callable[[str], None] | None = None,
     probe: HostProbe | None = None,
     timestamp: datetime | None = None,
@@ -56,6 +66,7 @@ def run_backup_job(
     runner = compose_runner if compose_runner is not None else SubprocessComposeRunner()
     pack_error: ArchiveCommandError | None = None
     up_error: ComposeCommandError | None = None
+    integrity_error: IntegrityError | None = None
     archive_path: Path | None = None
     stack_stopped = False
 
@@ -85,6 +96,19 @@ def run_backup_job(
             log_line(_format_phase_log_line("backup: pack phase failed"))
         else:
             log_line(_format_phase_log_line("backup: pack phase finished"))
+            if write_integrity and archive_path is not None:
+                log_line(_format_phase_log_line("backup: hash phase started"))
+                try:
+                    write_archive_integrity(
+                        archive_path,
+                        file_hasher=file_hasher,
+                        sidecar_store=sidecar_store,
+                    )
+                except IntegrityError as integrity_error_candidate:
+                    integrity_error = integrity_error_candidate
+                    log_line(_format_phase_log_line("backup: hash phase failed"))
+                else:
+                    log_line(_format_phase_log_line("backup: hash phase finished"))
     finally:
         if stack_stopped:
             log_line(_format_phase_log_line("backup: up phase started"))
@@ -113,5 +137,7 @@ def run_backup_job(
     if pack_error is not None:
         # If packing failed but `up` succeeded, we end with an archive error with the stack online.
         raise pack_error
+    if integrity_error is not None:
+        raise integrity_error
     assert archive_path is not None
     return archive_path
