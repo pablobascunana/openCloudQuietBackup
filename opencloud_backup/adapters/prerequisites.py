@@ -51,13 +51,14 @@ def check_binaries(
     for binary_name in required_binaries(mode):
         if probe.which(binary_name) is None:
             missing_binary_names.append(binary_name)
-    if compression is None:
-        if not any(probe.which(compression_binary) for compression_binary in COMPRESSION_BINARIES):
-            missing_binary_names.extend(["zstd", "gzip"])
-    elif compression == CompressionFormat.ZSTD and probe.which("zstd") is None:
-        missing_binary_names.append("zstd")
-    elif compression == CompressionFormat.GZIP and probe.which("gzip") is None:
-        missing_binary_names.append("gzip")
+    if mode != JobMode.RESTORE:
+        if compression is None:
+            if not any(probe.which(compression_binary) for compression_binary in COMPRESSION_BINARIES):
+                missing_binary_names.extend(["zstd", "gzip"])
+        elif compression == CompressionFormat.ZSTD and probe.which("zstd") is None:
+            missing_binary_names.append("zstd")
+        elif compression == CompressionFormat.GZIP and probe.which("gzip") is None:
+            missing_binary_names.append("gzip")
     return tuple(missing_binary_names)
 
 

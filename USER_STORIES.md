@@ -151,8 +151,8 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Misma lógica de compose que US-010.
-- [ ] Abortar si la parada falla.
+- [x] Misma lógica de compose que US-010.
+- [x] Abortar si la parada falla.
 
 **Prioridad:** P0 · **MVP:** sí
 
