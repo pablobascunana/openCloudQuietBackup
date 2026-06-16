@@ -114,8 +114,9 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Si el backup falla, la política es explícita: ¿reintentar `up` siempre? (recomendado sí) y registrar el error del backup.
-- [ ] Log del estado del stack tras `up` (p. ej. `docker compose ps`).
+- [x] Si el backup falla, la política es explícita: tras un `down` exitoso se intenta siempre `up -d` (recomendado sí) y se registra el error del backup.
+- [x] Log del estado del stack tras `up` (p. ej. `docker compose ps` — best-effort).
+- [x] Timeout de arranque configurable en la CLI/entorno: `--start-timeout` / `OCB_START_TIMEOUT`.
 
 **Prioridad:** P0 · **MVP:** sí
 

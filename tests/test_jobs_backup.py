@@ -14,14 +14,35 @@ from opencloud_backup.jobs.backup import _format_phase_log_line, run_backup_job
 
 
 class FakeComposeRunner:
-    def __init__(self, *, should_fail: bool = False) -> None:
-        self.should_fail = should_fail
+    def __init__(
+        self,
+        *,
+        should_fail_down: bool = False,
+        should_fail_up: bool = False,
+        should_fail_ps: bool = False,
+    ) -> None:
+        self.should_fail_down = should_fail_down
+        self.should_fail_up = should_fail_up
+        self.should_fail_ps = should_fail_ps
         self.down_calls: list[tuple[StackPaths, int]] = []
+        self.up_calls: list[tuple[StackPaths, int]] = []
+        self.ps_calls: list[StackPaths] = []
 
     def down(self, stack_paths: StackPaths, timeout_seconds: int) -> None:
         self.down_calls.append((stack_paths, timeout_seconds))
-        if self.should_fail:
+        if self.should_fail_down:
             raise ComposeCommandError("docker compose down", 1, "compose failed")
+
+    def up(self, stack_paths: StackPaths, timeout_seconds: int) -> None:
+        self.up_calls.append((stack_paths, timeout_seconds))
+        if self.should_fail_up:
+            raise ComposeCommandError("docker compose up -d", 1, "compose failed")
+
+    def ps(self, stack_paths: StackPaths) -> str:
+        self.ps_calls.append(stack_paths)
+        if self.should_fail_ps:
+            raise ComposeCommandError("docker ps (compose project)", 1, "compose failed")
+        return "ps-ok"
 
 
 class FakeArchiveBuilder:
@@ -77,6 +98,7 @@ def _job_kwargs(
         "include_env": True,
         "disk_check_path": output_dir or Path("/data/backups"),
         "stop_timeout_seconds": 180,
+        "start_timeout_seconds": 180,
     }
     kwargs.update(overrides)
     return kwargs
@@ -134,11 +156,20 @@ def test_run_backup_job_happy_path_returns_archive_path() -> None:
     assert archive_path == fake_packer.archive_path
     assert len(fake_runner.down_calls) == 1
     assert fake_runner.down_calls[0] == (stack_paths, 180)
+    assert len(fake_runner.up_calls) == 1
+    assert fake_runner.up_calls[0] == (stack_paths, 180)
+    assert len(fake_runner.ps_calls) == 1
+    assert fake_runner.ps_calls[0] == stack_paths
     assert len(fake_packer.create_calls) == 1
     assert log_lines[0].endswith("backup: stop phase started")
     assert log_lines[1].endswith("backup: stop phase finished")
     assert log_lines[2].endswith("backup: pack phase started")
     assert log_lines[3].endswith("backup: pack phase finished")
+    assert log_lines[4].endswith("backup: up phase started")
+    assert log_lines[5].endswith("backup: up phase finished")
+    assert log_lines[6].endswith("backup: ps phase started")
+    assert log_lines[7].endswith("backup: ps phase finished")
+    assert log_lines[8] == "ps-ok"
 
 
 def test_run_backup_job_prereqs_fail_no_down_no_logs() -> None:
@@ -168,7 +199,7 @@ def test_run_backup_job_prereqs_fail_no_down_no_logs() -> None:
 
 def test_run_backup_job_compose_fail_logs_failed_no_pack() -> None:
     stack_paths = _stack_paths(Path("/data/opencloud"))
-    fake_runner = FakeComposeRunner(should_fail=True)
+    fake_runner = FakeComposeRunner(should_fail_down=True)
     fake_packer = FakeArchiveBuilder()
     log_lines: list[str] = []
 
@@ -213,6 +244,13 @@ def test_run_backup_job_pack_fail_logs_failed() -> None:
 
     assert log_lines[2].endswith("backup: pack phase started")
     assert log_lines[3].endswith("backup: pack phase failed")
+    assert len(fake_runner.up_calls) == 1
+    assert len(fake_runner.ps_calls) == 1
+    assert log_lines[4].endswith("backup: up phase started")
+    assert log_lines[5].endswith("backup: up phase finished")
+    assert log_lines[6].endswith("backup: ps phase started")
+    assert log_lines[7].endswith("backup: ps phase finished")
+    assert log_lines[8] == "ps-ok"
 
 
 def test_run_backup_job_passes_disk_threshold_and_compression() -> None:

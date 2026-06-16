@@ -18,6 +18,12 @@ class FakeComposeRunner:
     def down(self, stack_paths: StackPaths, timeout_seconds: int) -> None:
         return None
 
+    def up(self, stack_paths: StackPaths, timeout_seconds: int) -> None:
+        return None
+
+    def ps(self, stack_paths: StackPaths) -> str:
+        return "ps-ok"
+
 
 def _ok_prereq_report() -> PrerequisiteReport:
     return PrerequisiteReport(
@@ -240,6 +246,11 @@ def test_backup_stop_and_pack_timestamps_on_success(capsys: pytest.CaptureFixtur
         assert "backup: stop phase finished" in standard_error
         assert "backup: pack phase started" in standard_error
         assert "backup: pack phase finished" in standard_error
+        assert "backup: up phase started" in standard_error
+        assert "backup: up phase finished" in standard_error
+        assert "backup: ps phase started" in standard_error
+        assert "backup: ps phase finished" in standard_error
+        assert "ps-ok" in standard_error
 
 
 def test_backup_env_stop_timeout(
@@ -255,3 +266,27 @@ def test_backup_env_stop_timeout(
         ):
             main(["backup"])
         assert mock_job.call_args.kwargs["stop_timeout_seconds"] == 240
+
+
+def test_backup_env_start_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        monkeypatch.setenv("OCB_OPENCLOUD_ROOT", str(opencloud_root))
+        monkeypatch.setenv("OCB_START_TIMEOUT", "240")
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=Path("/x.tar.zst")) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(["backup"])
+        assert mock_job.call_args.kwargs["start_timeout_seconds"] == 240
+
+
+def test_backup_invalid_start_timeout_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        with pytest.raises(SystemExit) as system_exit:
+            main(["backup", "--opencloud-root", str(opencloud_root), "--start-timeout", "0"])
+        assert system_exit.value.code == EXIT_USAGE
+        assert "start-timeout" in capsys.readouterr().err
