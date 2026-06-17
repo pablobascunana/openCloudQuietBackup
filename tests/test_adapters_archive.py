@@ -9,10 +9,17 @@ import pytest
 
 from opencloud_backup.adapters.archive import (
     ARCHIVE_CREATE_COMMAND_LABEL,
+    ARCHIVE_EXTRACT_COMMAND_LABEL,
+    ARCHIVE_LIST_COMMAND_LABEL,
     SubprocessArchiveBuilder,
+    SubprocessArchiveExtractor,
     build_gzip_argv,
+    build_gzip_decompress_argv,
     build_tar_create_argv,
+    build_tar_extract_argv,
+    build_tar_list_argv,
     build_zstd_argv,
+    build_zstd_decompress_argv,
 )
 from opencloud_backup.config import StackPaths
 from opencloud_backup.domain.archive import TAR_TRANSFORM, CompressionFormat
@@ -71,6 +78,131 @@ def test_build_zstd_argv() -> None:
 
 def test_build_gzip_argv() -> None:
     assert build_gzip_argv() == ["gzip", "-c"]
+
+
+def test_build_tar_list_argv_stdin() -> None:
+    assert build_tar_list_argv() == ["tar", "-tf", "-"]
+
+
+def test_build_tar_list_argv_file() -> None:
+    assert build_tar_list_argv(archive_file="/backups/x.tar") == ["tar", "-tf", "/backups/x.tar"]
+
+
+def test_build_tar_extract_argv() -> None:
+    dest = Path("/staging")
+    argv = build_tar_extract_argv(dest)
+    assert argv == [
+        "tar",
+        "--xattrs",
+        "--acls",
+        "--numeric-owner",
+        "-xf",
+        "-",
+        "-C",
+        str(dest),
+    ]
+
+
+def test_build_zstd_decompress_argv() -> None:
+    archive_path = Path("/backups/opencloud.tar.zst")
+    assert build_zstd_decompress_argv(archive_path) == ["zstd", "-d", "-c", str(archive_path)]
+
+
+def test_build_gzip_decompress_argv() -> None:
+    archive_path = Path("/backups/opencloud.tar.gz")
+    assert build_gzip_decompress_argv(archive_path) == ["gzip", "-dc", str(archive_path)]
+
+
+def test_list_members_uncompressed_success(tmp_path: Path) -> None:
+    archive_path = tmp_path / "opencloud.tar"
+    archive_path.write_bytes(b"tar")
+
+    def run_command(command_argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=command_argv,
+            returncode=0,
+            stdout="opencloud/config/\nopencloud/data/file\n",
+            stderr="",
+        )
+
+    extractor = SubprocessArchiveExtractor(run_command=run_command)
+    members = extractor.list_members(archive_path, compression=CompressionFormat.NONE)
+    assert members == ("opencloud/config/", "opencloud/data/file")
+
+
+def test_list_members_uncompressed_failure(tmp_path: Path) -> None:
+    archive_path = tmp_path / "opencloud.tar"
+    archive_path.write_bytes(b"tar")
+
+    def run_command(command_argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=command_argv, returncode=1, stdout="", stderr="list failed")
+
+    extractor = SubprocessArchiveExtractor(run_command=run_command)
+    with pytest.raises(ArchiveCommandError) as error_info:
+        extractor.list_members(archive_path, compression=CompressionFormat.NONE)
+    assert error_info.value.command_label == ARCHIVE_LIST_COMMAND_LABEL
+
+
+def test_extract_uncompressed_success(tmp_path: Path) -> None:
+    archive_path = tmp_path / "opencloud.tar"
+    archive_path.write_bytes(b"tar")
+    dest_dir = tmp_path / "staging"
+    dest_dir.mkdir()
+
+    def run_command(command_argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert "-C" in command_argv
+        assert str(dest_dir) in command_argv
+        return subprocess.CompletedProcess(args=command_argv, returncode=0, stdout="", stderr="")
+
+    extractor = SubprocessArchiveExtractor(run_command=run_command)
+    extractor.extract_archive(archive_path, dest_dir, compression=CompressionFormat.NONE)
+
+
+def test_extract_uncompressed_timeout(tmp_path: Path) -> None:
+    archive_path = tmp_path / "opencloud.tar"
+    archive_path.write_bytes(b"tar")
+    dest_dir = tmp_path / "staging"
+    dest_dir.mkdir()
+
+    def run_command(_command_argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd="tar", timeout=30)
+
+    extractor = SubprocessArchiveExtractor(run_command=run_command)
+    with pytest.raises(ArchiveCommandError) as error_info:
+        extractor.extract_archive(
+            archive_path,
+            dest_dir,
+            compression=CompressionFormat.NONE,
+            timeout_seconds=30,
+        )
+    assert error_info.value.command_label == ARCHIVE_EXTRACT_COMMAND_LABEL
+    assert error_info.value.return_code == -1
+
+
+def test_list_members_zstd_pipeline(tmp_path: Path) -> None:
+    archive_path = tmp_path / "opencloud.tar.zst"
+    archive_path.write_bytes(b"zst")
+
+    class FakeProcess:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+            self.stdin = MagicMock()
+            self.stdout = MagicMock()
+            self.stdout.read.return_value = b"opencloud/config/\n"
+            self.stderr = MagicMock()
+            self.stderr.read.return_value = b""
+
+        def wait(self, timeout: int | None = None) -> int:
+            return self.returncode
+
+    def popen(command_argv: list[str], **_kwargs: object) -> FakeProcess:
+        if command_argv[0] == "zstd":
+            assert command_argv == build_zstd_decompress_argv(archive_path)
+        return FakeProcess()
+
+    extractor = SubprocessArchiveExtractor(popen=popen)
+    members = extractor.list_members(archive_path, compression=CompressionFormat.ZSTD)
+    assert members == ("opencloud/config/",)
 
 
 def test_create_uncompressed_success(tmp_path: Path) -> None:

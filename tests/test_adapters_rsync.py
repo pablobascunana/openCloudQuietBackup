@@ -28,6 +28,26 @@ def test_build_rsync_argv_directory_trailing_slashes() -> None:
         assert argv[3] == f"{destination.resolve()}/"
 
 
+def test_build_rsync_argv_delete_true() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        source = Path(temporary_directory) / "config"
+        destination = Path(temporary_directory) / "snap" / "config"
+        source.mkdir()
+        destination.mkdir(parents=True)
+        argv = build_rsync_argv(source, destination, delete=True)
+        assert argv[1:4] == ["-aHAX", "--delete", f"{source.resolve()}/"]
+
+
+def test_build_rsync_argv_delete_false_no_flag() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        source = Path(temporary_directory) / "config"
+        destination = Path(temporary_directory) / "snap" / "config"
+        source.mkdir()
+        destination.mkdir(parents=True)
+        argv = build_rsync_argv(source, destination, delete=False)
+        assert "--delete" not in argv
+
+
 def test_build_rsync_argv_file_no_trailing_slashes() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         source = Path(temporary_directory) / ".env"
@@ -49,9 +69,9 @@ def test_subprocess_tree_syncer_success() -> None:
         destination.mkdir(parents=True)
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stderr=""))
         syncer = SubprocessTreeSyncer(run_command=mock_run)
-        syncer.sync_tree(source, destination)
+        syncer.sync_tree(source, destination, delete=True)
         mock_run.assert_called_once()
-        assert mock_run.call_args.args[0] == build_rsync_argv(source, destination)
+        assert mock_run.call_args.args[0] == build_rsync_argv(source, destination, delete=True)
 
 
 def test_subprocess_tree_syncer_nonzero_exit() -> None:

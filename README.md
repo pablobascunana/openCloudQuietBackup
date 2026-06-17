@@ -321,25 +321,36 @@ uv run opencloud-quiet-backup verify \
 
 **Retention (US-030):** when deleting old backups, remove the paired sidecar `{archive}.sha256` together with the archive file.
 
-### Restore (US-020, US-021)
+### Restore (US-020–US-022)
 
-Stops the stack with `docker compose down`, then copies the current live `config/`, `data/`, and optional `.env` into a timestamped security snapshot under `{opencloud_root}/snapshots/pre-restore-YYYY-MM-DD_HHMMSS/` using `rsync -aHAX` (no `--delete`). The snapshot base directory is created automatically if missing.
+Stops the stack with `docker compose down`, copies the current live `config/`, `data/`, and optional `.env` into a timestamped security snapshot under `{opencloud_root}/snapshots/pre-restore-YYYY-MM-DD_HHMMSS/` using `rsync -aHAX` (no `--delete`), then extracts the backup archive and applies it to the live tree with `rsync -aHAX --delete` on `config/` and `data/`. The snapshot base directory is created automatically if missing.
+
+`--archive` is **required** and must be a `.tar.zst`, `.tar.gz`, or `.tar` file matching the canonical backup layout (`opencloud/config`, `opencloud/data`, optional `opencloud/.env`).
 
 ```bash
 uv run opencloud-quiet-backup restore \
-  --opencloud-root /volume1/docker/opencloud
+  --opencloud-root /volume1/docker/opencloud \
+  --archive /volume1/backups/opencloud-2026-06-14_101530.tar.zst
 
-# Custom snapshot base, keep previous snapshots, exclude .env
+# Verify SHA-256 sidecar before extract, custom snapshot base, exclude .env from snapshot only
 uv run opencloud-quiet-backup restore \
   --opencloud-root /volume1/docker/opencloud \
+  --archive /volume1/backups/opencloud-2026-06-14_101530.tar.zst \
+  --verify-hash \
   --snapshot-dir /volume1/backups/opencloud-snapshots \
   --keep-previous-snapshot \
   --no-env
 ```
 
-**Disk space:** ensure the volume hosting snapshots has at least as much free space as `config/`, `data/`, and `.env` combined (estimate with `du -sh config data .env`). Use `--disk-check-path` (default: parent of the snapshot base), `--min-free-bytes`, or `--min-free-percent` to enforce a threshold during prerequisite checks.
+**`.env` policy:** if the archive contains `opencloud/.env`, it is copied to the live `.env` with `rsync -aHAX` (no `--delete`). If the archive does **not** include `.env`, the existing live `.env` is left unchanged. The `--no-env` flag affects only the US-021 security snapshot, not whether `.env` is applied from the archive.
 
-On success, the stack remains stopped; archive extract/apply (US-022) and `compose up` (US-023) are not part of this release yet.
+**Destructive apply:** `config/` and `data/` are synced with `--delete`, so files present on disk but absent in the archive are removed. Plan disk space for both the snapshot and a full extract under `{opencloud_root}/.restore-staging-YYYY-MM-DD_HHMMSS/` during the job (staging is removed on success).
+
+**Disk space:** ensure the volume hosting snapshots and staging has at least as much free space as `config/`, `data/`, `.env`, and the uncompressed archive combined (estimate with `du -sh config data .env` and the archive size). Use `--disk-check-path` (default: parent of the snapshot base), `--min-free-bytes`, or `--min-free-percent` to enforce a threshold during prerequisite checks.
+
+**Rollback:** if extract or apply fails, the US-021 snapshot under `pre-restore-*` remains available for manual rsync rollback. Residual staging directories (`.restore-staging-*`) may remain if cleanup fails.
+
+On success, the stack remains stopped; `docker compose up` (US-023) must be run manually.
 
 ---
 

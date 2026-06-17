@@ -323,22 +323,23 @@ def test_no_compression_both_missing_when_unspecified() -> None:
     assert "gzip" in missing
 
 
-def test_restore_mode_ok_without_zstd_and_gzip() -> None:
+def test_restore_mode_zstd_requires_zstd() -> None:
+    which_map = _all_tools_which_map()
+    which_map["zstd"] = None
+    which_map["gzip"] = "/usr/bin/gzip"
+    probe = _make_probe(which_map=which_map)
+    missing = check_binaries(JobMode.RESTORE, probe, compression=CompressionFormat.ZSTD)
+    assert missing == ("zstd",)
+
+
+def test_restore_mode_none_skips_compressors() -> None:
     which_map = _all_tools_which_map()
     which_map["zstd"] = None
     which_map["gzip"] = None
     probe = _make_probe(which_map=which_map)
-    missing = check_binaries(JobMode.RESTORE, probe)
+    missing = check_binaries(JobMode.RESTORE, probe, compression=CompressionFormat.NONE)
     assert "zstd" not in missing
     assert "gzip" not in missing
-    with patch("opencloud_backup.adapters.prerequisites.os.access", return_value=True):
-        report = run_prerequisite_checks(
-            mode=JobMode.RESTORE,
-            stack_paths=_stack_paths(Path("/data")),
-            disk_check_path=Path("/data"),
-            probe=probe,
-        )
-    assert report.ok
 
 
 def test_backup_mode_still_requires_compression_when_unspecified() -> None:

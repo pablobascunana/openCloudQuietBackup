@@ -51,7 +51,7 @@ def check_binaries(
     for binary_name in required_binaries(mode):
         if probe.which(binary_name) is None:
             missing_binary_names.append(binary_name)
-    if mode != JobMode.RESTORE:
+    if mode != JobMode.RESTORE or compression is not None:
         if compression is None:
             if not any(probe.which(compression_binary) for compression_binary in COMPRESSION_BINARIES):
                 missing_binary_names.extend(["zstd", "gzip"])
