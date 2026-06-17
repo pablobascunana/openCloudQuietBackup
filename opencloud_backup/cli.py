@@ -7,7 +7,12 @@ from pathlib import Path
 
 from opencloud_backup.adapters.docker_compose import SubprocessComposeRunner
 from opencloud_backup.adapters.prerequisites import run_prerequisite_checks
-from opencloud_backup.config import ValidationError, load_stack_paths, resolve_backup_output_dir
+from opencloud_backup.config import (
+    ValidationError,
+    load_stack_paths,
+    resolve_backup_output_dir,
+    resolve_snapshot_base_dir,
+)
 from opencloud_backup.domain.archive import CompressionFormat
 from opencloud_backup.domain.errors import (
     ArchiveCommandError,
@@ -15,10 +20,12 @@ from opencloud_backup.domain.errors import (
     HashMismatchError,
     IntegrityError,
     PrerequisiteCheckError,
+    RsyncCommandError,
     SidecarNotFoundError,
 )
 from opencloud_backup.domain.integrity import sidecar_path_for_archive
 from opencloud_backup.domain.prereqs import DiskThreshold, JobMode, PrerequisiteReport
+from opencloud_backup.domain.snapshot import default_disk_check_path_for_snapshot_base
 from opencloud_backup.jobs.backup import run_backup_job
 from opencloud_backup.jobs.integrity import verify_archive_integrity
 from opencloud_backup.jobs.restore import run_restore_job
@@ -318,7 +325,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     restore_subparser = subcommand_parsers.add_parser(
         "restore",
-        help="Restore OpenCloud stack (US-020): prereqs, stop stack before restore phases.",
+        help="Restore OpenCloud stack (US-020, US-021): prereqs, stop stack, security snapshot.",
     )
     restore_subparser.add_argument(
         "--opencloud-root",
@@ -362,7 +369,32 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--disk-check-path",
         type=Path,
         default=None,
-        help="Path for disk space check (default: resolved opencloud_root).",
+        help="Path for disk space check (default: parent of resolved snapshot base). "
+        "Ensure free space is at least the combined size of config/, data/, and .env "
+        "(estimate with: du -sh config data .env).",
+    )
+    restore_subparser.add_argument(
+        "--snapshot-dir",
+        type=Path,
+        default=_path_from_environment_variable("OCB_SNAPSHOT_DIR"),
+        help="Snapshot base directory (default: {opencloud_root}/snapshots). "
+        "Created automatically if missing. Env: OCB_SNAPSHOT_DIR.",
+    )
+    restore_subparser.add_argument(
+        "--keep-previous-snapshot",
+        action="store_true",
+        help="Keep existing pre-restore-* snapshot subdirectories (default: replace them).",
+    )
+    restore_subparser.add_argument(
+        "--no-env",
+        action="store_true",
+        help="Exclude .env from the security snapshot.",
+    )
+    restore_subparser.add_argument(
+        "--snapshot-timeout",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_SNAPSHOT_TIMEOUT"),
+        help="Per-rsync timeout in seconds (default: unlimited). Env: OCB_SNAPSHOT_TIMEOUT.",
     )
 
     verify_subparser = subcommand_parsers.add_parser(
@@ -580,11 +612,20 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         )
         return EXIT_USAGE
 
+    snapshot_timeout_seconds: int | None = parsed_arguments.snapshot_timeout
+    if snapshot_timeout_seconds is not None and snapshot_timeout_seconds < MIN_PACK_TIMEOUT_SECONDS:
+        sys.stderr.write("Error: --snapshot-timeout must be at least 1 second.\n")
+        return EXIT_USAGE
+
     try:
         stack_paths = load_stack_paths(
             opencloud_root=parsed_arguments.opencloud_root,
             compose_dir=parsed_arguments.compose_dir,
             compose_file=parsed_arguments.compose_file,
+        )
+        snapshot_base_dir = resolve_snapshot_base_dir(
+            stack_paths.opencloud_root,
+            parsed_arguments.snapshot_dir,
         )
     except ValidationError as validation_error:
         sys.stderr.write(f"Configuration error: {validation_error}\n")
@@ -593,16 +634,20 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
     disk_check_path = (
         parsed_arguments.disk_check_path.expanduser().resolve()
         if parsed_arguments.disk_check_path is not None
-        else stack_paths.opencloud_root
+        else default_disk_check_path_for_snapshot_base(snapshot_base_dir)
     )
     disk_threshold = _build_disk_threshold(min_free_bytes, min_free_percent)
 
     try:
-        run_restore_job(
+        snapshot_path = run_restore_job(
             stack_paths=stack_paths,
+            snapshot_base_dir=snapshot_base_dir,
+            keep_previous_snapshot=parsed_arguments.keep_previous_snapshot,
+            include_env=not parsed_arguments.no_env,
             disk_check_path=disk_check_path,
             disk_threshold=disk_threshold,
             stop_timeout_seconds=stop_timeout_seconds,
+            snapshot_timeout_seconds=snapshot_timeout_seconds,
             compose_runner=SubprocessComposeRunner(),
         )
     except PrerequisiteCheckError as prerequisite_check_error:
@@ -616,10 +661,23 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         if compose_command_error.stderr:
             sys.stderr.write(f"  {compose_command_error.stderr}\n")
         return EXIT_ERROR
+    except RsyncCommandError as rsync_command_error:
+        sys.stderr.write(
+            "Error de restore: falló la copia de snapshot "
+            f"({rsync_command_error.command_label}, código {rsync_command_error.return_code})\n"
+        )
+        if rsync_command_error.stderr:
+            sys.stderr.write(f"  {rsync_command_error.stderr}\n")
+        return EXIT_ERROR
+    except ValidationError as validation_error:
+        sys.stderr.write(f"Configuration error: {validation_error}\n")
+        return EXIT_ERROR
 
+    print("Stack parado y snapshot de seguridad creado.")
+    print(f"  snapshot: {snapshot_path}")
     print(
-        "Stack parado correctamente. Las fases de restauración "
-        "(snapshot, extracción, rsync) están pendientes."
+        "Las fases de extracción y aplicación del backup (US-022) "
+        "y el arranque del stack (US-023) están pendientes."
     )
     return EXIT_OK
 

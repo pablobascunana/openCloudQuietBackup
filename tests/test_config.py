@@ -7,9 +7,11 @@ from conftest import make_valid_stack_tree
 
 from opencloud_backup.config import (
     ValidationError,
+    ensure_snapshot_base_dir,
     load_stack_paths,
     resolve_backup_output_dir,
     resolve_compose_file,
+    resolve_snapshot_base_dir,
     validate_backup_output_dir,
 )
 
@@ -179,3 +181,34 @@ def test_resolve_backup_output_dir_explicit_path() -> None:
         custom_output.mkdir()
         resolved = resolve_backup_output_dir(opencloud_root.resolve(), custom_output)
         assert resolved == custom_output.resolve()
+
+
+def test_resolve_snapshot_base_dir_default() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        resolved = resolve_snapshot_base_dir(opencloud_root.resolve())
+        assert resolved == (opencloud_root / "snapshots").resolve()
+
+
+def test_ensure_snapshot_base_dir_creates_missing() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        snapshot_base = Path(temporary_directory) / "snapshots"
+        resolved = ensure_snapshot_base_dir(snapshot_base)
+        assert resolved == snapshot_base.resolve()
+        assert snapshot_base.is_dir()
+
+
+def test_ensure_snapshot_base_dir_rejects_non_writable() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        snapshot_base = Path(temporary_directory) / "snapshots"
+        snapshot_base.mkdir()
+        if os.geteuid() == 0:
+            pytest.skip("root can write regardless of chmod")
+        snapshot_base.chmod(0o555)
+        try:
+            with pytest.raises(ValidationError, match="not writable"):
+                ensure_snapshot_base_dir(snapshot_base)
+        finally:
+            snapshot_base.chmod(0o755)
+

@@ -39,6 +39,14 @@ class ArchiveCommandError(JobError):
         super().__init__(f"{command_label} failed with exit code {return_code}")
 
 
+class RsyncCommandError(JobError):
+    def __init__(self, command_label: str, return_code: int, stderr: str) -> None:
+        self.command_label = command_label
+        self.return_code = return_code
+        self.stderr = _truncate_command_stderr(stderr)
+        super().__init__(f"{command_label} failed with exit code {return_code}")
+
+
 class IntegrityError(JobError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
