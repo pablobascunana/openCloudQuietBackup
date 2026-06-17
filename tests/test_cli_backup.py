@@ -149,7 +149,92 @@ def test_backup_missing_output_dir_exit_1(capsys: pytest.CaptureFixture[str]) ->
         with pytest.raises(SystemExit) as system_exit:
             main(["backup", "--opencloud-root", str(opencloud_root)])
         assert system_exit.value.code == EXIT_ERROR
-        assert "Output directory does not exist:" in capsys.readouterr().err
+        standard_error = capsys.readouterr().err
+        assert "Output directory does not exist:" in standard_error
+        assert "Use --create-output-dir para crearlo automáticamente." in standard_error
+
+
+def test_backup_create_output_dir_when_missing(capsys: pytest.CaptureFixture[str]) -> None:
+    archive_path = Path("/backups/opencloud-2026-06-14_101530.tar.zst")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        expected_output_dir = opencloud_root / "backups"
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=archive_path) as mock_job,
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root), "--create-output-dir"])
+        assert system_exit.value.code == EXIT_OK
+        assert expected_output_dir.is_dir()
+        assert mock_job.call_args.kwargs["output_dir"] == expected_output_dir.resolve()
+        assert "Backup completed successfully." in capsys.readouterr().out
+
+
+def test_backup_create_output_dir_env_truthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        expected_output_dir = opencloud_root / "backups"
+        monkeypatch.setenv("OCB_CREATE_OUTPUT_DIR", "1")
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=Path("/x.tar.zst")) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root)])
+        assert expected_output_dir.is_dir()
+        assert mock_job.call_args.kwargs["output_dir"] == expected_output_dir.resolve()
+
+
+def test_backup_create_output_dir_disk_check_uses_created_dir() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        expected_output_dir = opencloud_root / "backups"
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=Path("/x.tar.zst")) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root), "--create-output-dir"])
+        assert expected_output_dir.is_dir()
+        assert mock_job.call_args.kwargs["disk_check_path"] == expected_output_dir.resolve()
+
+
+def test_backup_create_output_dir_nested_custom_path() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        custom_output = Path(temporary_directory) / "volume1" / "backups" / "opencloud"
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=Path("/x.tar.zst")) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(
+                [
+                    "backup",
+                    "--opencloud-root",
+                    str(opencloud_root),
+                    "--output-dir",
+                    str(custom_output),
+                    "--create-output-dir",
+                ]
+            )
+        assert custom_output.is_dir()
+        assert mock_job.call_args.kwargs["output_dir"] == custom_output.resolve()
+
+
+def test_backup_create_output_dir_fails_when_path_is_file(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        output_file = opencloud_root / "backups"
+        output_file.write_text("x", encoding="utf-8")
+        with pytest.raises(SystemExit) as system_exit:
+            main(["backup", "--opencloud-root", str(opencloud_root), "--create-output-dir"])
+        assert system_exit.value.code == EXIT_ERROR
+        assert "no es un directorio" in capsys.readouterr().err
 
 
 def test_backup_invalid_pack_timeout_exit_2(capsys: pytest.CaptureFixture[str]) -> None:

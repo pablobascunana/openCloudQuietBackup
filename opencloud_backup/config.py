@@ -7,6 +7,7 @@ from pathlib import Path
 __all__ = [
     "StackPaths",
     "ValidationError",
+    "ensure_backup_output_dir",
     "ensure_snapshot_base_dir",
     "load_stack_paths",
     "resolve_backup_output_dir",
@@ -125,10 +126,32 @@ def validate_backup_output_dir(output_dir: Path | str) -> Path:
 def resolve_backup_output_dir(opencloud_root: Path, output_dir: Path | str | None = None) -> Path:
     from opencloud_backup.domain.archive import default_backup_output_dir
 
-    target_output_dir = (
-        default_backup_output_dir(opencloud_root) if output_dir is None else Path(output_dir)
-    )
-    return validate_backup_output_dir(target_output_dir)
+    if output_dir is None:
+        return default_backup_output_dir(opencloud_root)
+    candidate = Path(output_dir).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        return candidate.resolve()
+    except OSError as operating_system_error:
+        raise ValidationError(
+            f"Could not resolve output directory: {output_dir}. {operating_system_error}"
+        ) from operating_system_error
+
+
+def ensure_backup_output_dir(path: Path) -> Path:
+    if not path.exists():
+        try:
+            path.mkdir(parents=True)
+        except OSError as operating_system_error:
+            raise ValidationError(
+                f"No se pudo crear el directorio de salida: {path}. {operating_system_error}"
+            ) from operating_system_error
+    if not path.is_dir():
+        raise ValidationError(f"El directorio de salida existe pero no es un directorio: {path}")
+    if not os.access(path, os.W_OK):
+        raise ValidationError(f"El directorio de salida no es escribible: {path}")
+    return path.resolve()
 
 
 def resolve_snapshot_base_dir(

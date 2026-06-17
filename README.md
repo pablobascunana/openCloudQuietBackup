@@ -138,6 +138,7 @@ Environment variables supported today:
 | `OCB_STOP_TIMEOUT` | Timeout in seconds for `docker compose down` in `backup` and `restore` (default 180). |
 | `OCB_START_TIMEOUT` | Timeout in seconds for `docker compose up -d` in `backup` and `restore` (default 180). |
 | `OCB_OUTPUT_DIR` | Directory for backup archives (default: `{opencloud_root}/backups`). |
+| `OCB_CREATE_OUTPUT_DIR` | When `1`, `true`, or `yes`, create `--output-dir` when missing on `backup` (same as `--create-output-dir`). |
 | `OCB_COMPRESSION` | Default compression for `backup` (`zstd`, `gzip`, or `none`). |
 | `OCB_PACK_TIMEOUT` | Timeout in seconds for the pack phase in `backup` (default: unlimited). |
 | `OCB_WRITE_HASH` | When `1`, `true`, or `yes` (case-insensitive), enable SHA-256 sidecar write on `backup` (same as `--write-hash`). |
@@ -226,13 +227,24 @@ uv run opencloud-quiet-backup prereqs \
 
 `prereqs` accepts the same compose flags as `validate` (`--compose-dir`, `--compose-file`, `OCB_COMPOSE_DIR`, `OCB_COMPOSE_FILE`).
 
-### Backup (US-010, US-011, US-012)
+### Backup (US-010, US-011, US-012, US-031)
 
-Runs prerequisite checks for backup mode, `docker compose down`, creates a canonical tar archive under the output directory (default `{opencloud_root}/backups` — the directory must already exist and be writable), then starts the stack again with `docker compose up -d` and dumps its status with `docker ps` (best-effort).
+Runs prerequisite checks for backup mode, `docker compose down`, creates a canonical tar archive under the output directory (default `{opencloud_root}/backups`), then starts the stack again with `docker compose up -d` and dumps its status with `docker ps` (best-effort).
+
+By default the output directory must already exist and be writable. Use `--create-output-dir` (or `OCB_CREATE_OUTPUT_DIR=1`) to create it automatically (`mkdir -p`). Restore auto-creates the snapshot directory because it is a mandatory safeguard in a destructive flow; backup uses opt-in creation so admins explicitly consent before writing to a dedicated volume.
+
+Relative `--output-dir` paths are resolved against the current working directory (same convention as `--snapshot-dir` in restore).
+
+Disk space checks (US-002) default to the resolved output directory (after auto-create when enabled). Override with `--disk-check-path` or `--min-free-bytes` / `--min-free-percent`.
 
 ```bash
-# Create the output directory once (not auto-created)
-mkdir -p /volume1/docker/opencloud/backups
+# Default output dir ({opencloud_root}/backups) — create if missing
+uv run opencloud-quiet-backup backup \
+  --opencloud-root /volume1/docker/opencloud \
+  --create-output-dir
+
+# Dedicated volume (manual mkdir still works without the flag)
+mkdir -p /volume1/backups/opencloud
 
 uv run opencloud-quiet-backup backup \
   --opencloud-root /volume1/docker/opencloud
@@ -241,12 +253,15 @@ uv run opencloud-quiet-backup backup \
 uv run opencloud-quiet-backup backup \
   --opencloud-root /volume1/docker/opencloud \
   --output-dir /volume1/backups/opencloud \
+  --create-output-dir \
   --compression zstd \
   --no-env \
   --pack-timeout 3600 \
   --stop-timeout 300 \
   --start-timeout 300
 ```
+
+To validate free space on a backup destination volume without running a full backup, use `prereqs` with `--disk-check-path` pointing at the target path (a dedicated `--output-dir` on `prereqs` is planned as a follow-up).
 
 **Canonical archive format** (format version `1` in code — `ARCHIVE_FORMAT_VERSION`):
 
@@ -509,7 +524,6 @@ From Cursor, the **Engram** MCP server exposes read and write (`mem_search`, `me
 
 1. **US-012** — Stack start after backup (`docker compose up -d`).
 2. **US-020–US-024** — Restore flow with prior snapshot and CLI confirmation.
-3. **US-031** — Auto-create output directory (today: must exist).
 
 See the [MVP summary](./USER_STORIES.md#resumen-mvp-sugerido) in `USER_STORIES.md` for the full list.
 

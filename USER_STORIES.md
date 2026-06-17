@@ -257,8 +257,8 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Creación del directorio si no existe (opcional, configurable).
-- [ ] Comprobación de espacio previa (enlace con US-002).
+- [x] Creación del directorio si no existe (opcional, configurable).
+- [x] Comprobación de espacio previa (enlace con US-002).
 
 **Prioridad:** P0 · **MVP:** sí
 

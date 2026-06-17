@@ -11,9 +11,11 @@ from opencloud_backup.adapters.prerequisites import run_prerequisite_checks
 from opencloud_backup.config import (
     StackPaths,
     ValidationError,
+    ensure_backup_output_dir,
     load_stack_paths,
     resolve_backup_output_dir,
     resolve_snapshot_base_dir,
+    validate_backup_output_dir,
 )
 from opencloud_backup.domain.archive import CompressionFormat, detect_compression_format
 from opencloud_backup.domain.errors import (
@@ -114,6 +116,26 @@ def _truthy_env(environment_variable_name: str) -> bool:
     if environment_variable_value is None or environment_variable_value.strip() == "":
         return False
     return environment_variable_value.strip().lower() in ("1", "true", "yes")
+
+
+def _resolved_create_output_dir_from_arguments(parsed_arguments: argparse.Namespace) -> bool:
+    if parsed_arguments.create_output_dir:
+        return True
+    return _truthy_env("OCB_CREATE_OUTPUT_DIR")
+
+
+def _format_config_error_with_output_dir_hint(
+    validation_error: ValidationError,
+    *,
+    create_output_dir_enabled: bool,
+) -> str:
+    message = f"Configuration error: {validation_error}"
+    if (
+        not create_output_dir_enabled
+        and "Output directory does not exist:" in str(validation_error)
+    ):
+        message += "\nUse --create-output-dir para crearlo automáticamente."
+    return message
 
 
 def _resolved_keep_days_from_arguments(parsed_arguments: argparse.Namespace) -> int | None:
@@ -428,7 +450,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=_path_from_environment_variable("OCB_OUTPUT_DIR"),
-        help="Directory for backup archives (default: {opencloud_root}/backups). Env: OCB_OUTPUT_DIR.",
+        help="Directory for backup archives (default: {opencloud_root}/backups). "
+        "Created automatically when missing if --create-output-dir or OCB_CREATE_OUTPUT_DIR is set. "
+        "Env: OCB_OUTPUT_DIR.",
+    )
+    backup_subparser.add_argument(
+        "--create-output-dir",
+        action="store_true",
+        help="Create --output-dir when missing (mkdir -p). Env: OCB_CREATE_OUTPUT_DIR.",
     )
     backup_subparser.add_argument(
         "--compression",
@@ -766,18 +795,29 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
         sys.stderr.write("Error: --pack-timeout must be at least 1 second.\n")
         return EXIT_USAGE
 
+    create_output_dir = _resolved_create_output_dir_from_arguments(parsed_arguments)
+
     try:
         stack_paths = load_stack_paths(
             opencloud_root=parsed_arguments.opencloud_root,
             compose_dir=parsed_arguments.compose_dir,
             compose_file=parsed_arguments.compose_file,
         )
-        output_dir = resolve_backup_output_dir(
+        resolved_output_dir = resolve_backup_output_dir(
             stack_paths.opencloud_root,
             parsed_arguments.output_dir,
         )
+        if create_output_dir:
+            ensure_backup_output_dir(resolved_output_dir)
+        output_dir = validate_backup_output_dir(resolved_output_dir)
     except ValidationError as validation_error:
-        sys.stderr.write(f"Configuration error: {validation_error}\n")
+        sys.stderr.write(
+            _format_config_error_with_output_dir_hint(
+                validation_error,
+                create_output_dir_enabled=create_output_dir,
+            )
+            + "\n"
+        )
         return EXIT_ERROR
 
     disk_check_path = (
@@ -870,10 +910,11 @@ def run_retention_command(parsed_arguments: argparse.Namespace) -> int:
             compose_dir=parsed_arguments.compose_dir,
             compose_file=parsed_arguments.compose_file,
         )
-        output_dir = resolve_backup_output_dir(
+        resolved_output_dir = resolve_backup_output_dir(
             stack_paths.opencloud_root,
             parsed_arguments.output_dir,
         )
+        output_dir = validate_backup_output_dir(resolved_output_dir)
         retention_policy = _build_retention_policy_from_arguments(parsed_arguments)
     except ValidationError as validation_error:
         sys.stderr.write(f"Error de configuración: {validation_error}\n")

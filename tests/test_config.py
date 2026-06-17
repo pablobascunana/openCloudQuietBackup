@@ -7,6 +7,7 @@ from conftest import make_valid_stack_tree
 
 from opencloud_backup.config import (
     ValidationError,
+    ensure_backup_output_dir,
     ensure_snapshot_base_dir,
     load_stack_paths,
     resolve_backup_output_dir,
@@ -167,10 +168,9 @@ def test_resolve_backup_output_dir_default_under_root() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         opencloud_root = Path(temporary_directory) / "oc"
         make_valid_stack_tree(opencloud_root)
-        backups_dir = opencloud_root / "backups"
-        backups_dir.mkdir()
         resolved = resolve_backup_output_dir(opencloud_root.resolve())
-        assert resolved == backups_dir.resolve()
+        assert resolved == (opencloud_root / "backups").resolve()
+        assert not (opencloud_root / "backups").exists()
 
 
 def test_resolve_backup_output_dir_explicit_path() -> None:
@@ -178,9 +178,72 @@ def test_resolve_backup_output_dir_explicit_path() -> None:
         opencloud_root = Path(temporary_directory) / "oc"
         make_valid_stack_tree(opencloud_root)
         custom_output = Path(temporary_directory) / "custom-backups"
-        custom_output.mkdir()
         resolved = resolve_backup_output_dir(opencloud_root.resolve(), custom_output)
         assert resolved == custom_output.resolve()
+        assert not custom_output.exists()
+
+
+def test_resolve_backup_output_dir_relative_against_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        working_directory = Path(temporary_directory) / "work"
+        working_directory.mkdir()
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        monkeypatch.chdir(working_directory)
+        resolved = resolve_backup_output_dir(opencloud_root.resolve(), Path("nested/backups"))
+        assert resolved == (working_directory / "nested" / "backups").resolve()
+        assert not resolved.exists()
+
+
+def test_resolve_backup_output_dir_does_not_require_existence() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        missing_output = Path(temporary_directory) / "missing-backups"
+        resolved = resolve_backup_output_dir(opencloud_root.resolve(), missing_output)
+        assert resolved == missing_output.resolve()
+        with pytest.raises(ValidationError, match="Output directory does not exist:"):
+            validate_backup_output_dir(resolved)
+
+
+def test_ensure_backup_output_dir_creates_missing() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_dir = Path(temporary_directory) / "backups"
+        resolved = ensure_backup_output_dir(output_dir)
+        assert resolved == output_dir.resolve()
+        assert output_dir.is_dir()
+
+
+def test_ensure_backup_output_dir_creates_nested_parents() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_dir = Path(temporary_directory) / "volume1" / "backups" / "opencloud"
+        resolved = ensure_backup_output_dir(output_dir)
+        assert resolved == output_dir.resolve()
+        assert output_dir.is_dir()
+
+
+def test_ensure_backup_output_dir_rejects_file() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_file = Path(temporary_directory) / "not-a-dir"
+        output_file.write_text("x", encoding="utf-8")
+        with pytest.raises(ValidationError, match="no es un directorio"):
+            ensure_backup_output_dir(output_file)
+
+
+def test_ensure_backup_output_dir_rejects_non_writable() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_dir = Path(temporary_directory) / "backups"
+        output_dir.mkdir()
+        if os.geteuid() == 0:
+            pytest.skip("root can write regardless of chmod")
+        output_dir.chmod(0o555)
+        try:
+            with pytest.raises(ValidationError, match="no es escribible"):
+                ensure_backup_output_dir(output_dir)
+        finally:
+            output_dir.chmod(0o755)
 
 
 def test_resolve_snapshot_base_dir_default() -> None:

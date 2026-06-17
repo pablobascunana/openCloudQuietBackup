@@ -102,6 +102,18 @@ def test_retention_delete_failure_exit_1_spanish(capsys: pytest.CaptureFixture[s
         assert "Error de retención: no se pudo eliminar" in capsys.readouterr().err
 
 
+def test_retention_missing_output_dir_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(opencloud_root)
+        with pytest.raises(SystemExit) as system_exit:
+            main(["retention", "--opencloud-root", str(opencloud_root), "--keep-count", "5"])
+        assert system_exit.value.code == EXIT_ERROR
+        standard_error = capsys.readouterr().err
+        assert "does not exist" in standard_error
+        assert "--create-output-dir" not in standard_error
+
+
 def test_build_argument_parser_includes_retention_subcommand() -> None:
     argument_parser = build_argument_parser()
     parsed_arguments = argument_parser.parse_args(
