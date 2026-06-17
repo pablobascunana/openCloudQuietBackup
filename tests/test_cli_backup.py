@@ -17,6 +17,7 @@ from opencloud_backup.domain.errors import (
     PrerequisiteCheckError,
 )
 from opencloud_backup.domain.prereqs import DiskCheckResult, JobMode, PrerequisiteReport
+from opencloud_backup.jobs.retention import RetentionResult
 
 
 class FakeComposeRunner:
@@ -350,3 +351,63 @@ def test_backup_integrity_failure_exit_1_spanish_message(capsys: pytest.CaptureF
             main(["backup", "--opencloud-root", str(opencloud_root), "--write-hash"])
         assert system_exit.value.code == EXIT_ERROR
         assert "no se pudo registrar el hash del archivo de backup" in capsys.readouterr().err
+
+
+def test_backup_retention_called_after_success_with_keep_count() -> None:
+    archive_path = Path("/backups/opencloud-2026-06-14_101530.tar.zst")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=archive_path),
+            patch("opencloud_backup.cli.run_retention_job", return_value=RetentionResult((), ())) as mock_retention,
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root), "--keep-count", "5"])
+        assert system_exit.value.code == EXIT_OK
+        mock_retention.assert_called_once()
+        assert mock_retention.call_args.kwargs["protect_archive"] == archive_path
+
+
+def test_backup_no_retention_skips_retention_job() -> None:
+    archive_path = Path("/backups/opencloud-2026-06-14_101530.tar.zst")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=archive_path),
+            patch("opencloud_backup.cli.run_retention_job") as mock_retention,
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(
+                [
+                    "backup",
+                    "--opencloud-root",
+                    str(opencloud_root),
+                    "--keep-count",
+                    "5",
+                    "--no-retention",
+                ]
+            )
+        assert system_exit.value.code == EXIT_OK
+        mock_retention.assert_not_called()
+
+
+def test_backup_retention_failure_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
+    from opencloud_backup.domain.errors import RetentionError
+
+    archive_path = Path("/backups/opencloud-2026-06-14_101530.tar.zst")
+    failed_path = Path("/backups/opencloud-2026-05-01_120000.tar.zst")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        with (
+            patch("opencloud_backup.cli.run_backup_job", return_value=archive_path),
+            patch(
+                "opencloud_backup.cli.run_retention_job",
+                side_effect=RetentionError(failed_path),
+            ),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(["backup", "--opencloud-root", str(opencloud_root), "--keep-count", "1"])
+        assert system_exit.value.code == EXIT_ERROR
+        captured = capsys.readouterr()
+        assert "Backup completed successfully." in captured.out
+        assert "Error de retención: no se pudo eliminar" in captured.err

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from opencloud_backup.adapters.docker_compose import SubprocessComposeRunner
+from opencloud_backup.adapters.retention import FilesystemRetentionDeleter
 from opencloud_backup.adapters.prerequisites import run_prerequisite_checks
 from opencloud_backup.config import (
     StackPaths,
@@ -21,15 +22,18 @@ from opencloud_backup.domain.errors import (
     HashMismatchError,
     IntegrityError,
     PrerequisiteCheckError,
+    RetentionError,
     RsyncCommandError,
     SidecarNotFoundError,
 )
 from opencloud_backup.domain.integrity import sidecar_path_for_archive
 from opencloud_backup.domain.prereqs import DiskThreshold, JobMode, PrerequisiteReport
+from opencloud_backup.domain.retention import RetentionPolicy, build_retention_policy
 from opencloud_backup.domain.snapshot import default_disk_check_path_for_snapshot_base
 from opencloud_backup.jobs.backup import run_backup_job
 from opencloud_backup.jobs.integrity import verify_archive_integrity
 from opencloud_backup.jobs.restore import run_restore_job
+from opencloud_backup.jobs.retention import RetentionResult, run_retention_job
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -110,6 +114,55 @@ def _truthy_env(environment_variable_name: str) -> bool:
     if environment_variable_value is None or environment_variable_value.strip() == "":
         return False
     return environment_variable_value.strip().lower() in ("1", "true", "yes")
+
+
+def _resolved_keep_days_from_arguments(parsed_arguments: argparse.Namespace) -> int | None:
+    if parsed_arguments.keep_days is not None:
+        return parsed_arguments.keep_days
+    return _optional_int_from_environment_variable("OCB_KEEP_DAYS")
+
+
+def _resolved_keep_count_from_arguments(parsed_arguments: argparse.Namespace) -> int | None:
+    if parsed_arguments.keep_count is not None:
+        return parsed_arguments.keep_count
+    return _optional_int_from_environment_variable("OCB_KEEP_COUNT")
+
+
+def _build_retention_policy_from_arguments(parsed_arguments: argparse.Namespace) -> RetentionPolicy:
+    return build_retention_policy(
+        max_age_days=_resolved_keep_days_from_arguments(parsed_arguments),
+        max_count=_resolved_keep_count_from_arguments(parsed_arguments),
+    )
+
+
+def _print_retention_success(retention_result: RetentionResult) -> None:
+    archive_count = len(retention_result.deleted_archives)
+    print("Retención completada.")
+    print(f"  archivos eliminados: {archive_count}")
+    for archive_path in retention_result.deleted_archives:
+        print(f"  - {archive_path}")
+
+
+def _run_retention_after_backup(
+    *,
+    output_dir: Path,
+    policy: RetentionPolicy,
+    protect_archive: Path,
+) -> int:
+    try:
+        retention_result = run_retention_job(
+            output_dir=output_dir,
+            policy=policy,
+            protect_archive=protect_archive,
+            deleter=FilesystemRetentionDeleter(),
+        )
+    except RetentionError as retention_error:
+        sys.stderr.write(
+            f"Error de retención: no se pudo eliminar {retention_error.path}.\n"
+        )
+        return EXIT_ERROR
+    _print_retention_success(retention_result)
+    return EXIT_OK
 
 
 def _build_disk_threshold(
@@ -418,6 +471,65 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write SHA-256 sidecar .sha256 after pack (US-013). Env: OCB_WRITE_HASH.",
     )
+    backup_subparser.add_argument(
+        "--keep-days",
+        type=int,
+        default=None,
+        help="Delete backups older than N days after successful backup (US-030). Env: OCB_KEEP_DAYS.",
+    )
+    backup_subparser.add_argument(
+        "--keep-count",
+        type=int,
+        default=None,
+        help="Keep at most N newest backups after successful backup (US-030). Env: OCB_KEEP_COUNT.",
+    )
+    backup_subparser.add_argument(
+        "--no-retention",
+        action="store_true",
+        help="Skip retention even when OCB_KEEP_DAYS or OCB_KEEP_COUNT is set.",
+    )
+
+    retention_subparser = subcommand_parsers.add_parser(
+        "retention",
+        help="Prune old backup archives by age and/or count (US-030).",
+    )
+    retention_subparser.add_argument(
+        "--opencloud-root",
+        type=Path,
+        default=_path_from_environment_variable("OCB_OPENCLOUD_ROOT"),
+        help="Root with config/ and data/ (or OCB_OPENCLOUD_ROOT env var).",
+    )
+    retention_subparser.add_argument(
+        "--compose-dir",
+        type=Path,
+        default=_path_from_environment_variable("OCB_COMPOSE_DIR"),
+        help="Compose project directory (default: same as --opencloud-root). Env: OCB_COMPOSE_DIR.",
+    )
+    retention_subparser.add_argument(
+        "--compose-file",
+        type=Path,
+        default=_path_from_environment_variable("OCB_COMPOSE_FILE"),
+        help="Explicit path to docker-compose.yml/.yaml (relative to --compose-dir). "
+        "If omitted, searched under --compose-dir. Env: OCB_COMPOSE_FILE.",
+    )
+    retention_subparser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=_path_from_environment_variable("OCB_OUTPUT_DIR"),
+        help="Directory for backup archives (default: {opencloud_root}/backups). Env: OCB_OUTPUT_DIR.",
+    )
+    retention_subparser.add_argument(
+        "--keep-days",
+        type=int,
+        default=None,
+        help="Delete backups older than N days. Env: OCB_KEEP_DAYS.",
+    )
+    retention_subparser.add_argument(
+        "--keep-count",
+        type=int,
+        default=None,
+        help="Keep at most N newest backups. Env: OCB_KEEP_COUNT.",
+    )
 
     restore_subparser = subcommand_parsers.add_parser(
         "restore",
@@ -718,6 +830,68 @@ def run_backup_command(parsed_arguments: argparse.Namespace) -> int:
     print(f"  archive: {archive_path}")
     if write_integrity:
         print(f"  sidecar: {sidecar_path_for_archive(archive_path)}")
+
+    if not parsed_arguments.no_retention:
+        try:
+            retention_policy = _build_retention_policy_from_arguments(parsed_arguments)
+        except ValidationError as validation_error:
+            sys.stderr.write(f"Error de configuración: {validation_error}\n")
+            return EXIT_ERROR
+        if retention_policy.is_active:
+            retention_exit_code = _run_retention_after_backup(
+                output_dir=output_dir,
+                policy=retention_policy,
+                protect_archive=archive_path,
+            )
+            if retention_exit_code != EXIT_OK:
+                return retention_exit_code
+    return EXIT_OK
+
+
+def run_retention_command(parsed_arguments: argparse.Namespace) -> int:
+    if parsed_arguments.opencloud_root is None:
+        sys.stderr.write(
+            "Error: --opencloud-root or OCB_OPENCLOUD_ROOT environment variable is required.\n"
+        )
+        return EXIT_USAGE
+
+    keep_days = _resolved_keep_days_from_arguments(parsed_arguments)
+    keep_count = _resolved_keep_count_from_arguments(parsed_arguments)
+    if keep_days is None and keep_count is None:
+        sys.stderr.write(
+            "Error: debe indicar --keep-days y/o --keep-count "
+            "(o OCB_KEEP_DAYS / OCB_KEEP_COUNT).\n"
+        )
+        return EXIT_USAGE
+
+    try:
+        stack_paths = load_stack_paths(
+            opencloud_root=parsed_arguments.opencloud_root,
+            compose_dir=parsed_arguments.compose_dir,
+            compose_file=parsed_arguments.compose_file,
+        )
+        output_dir = resolve_backup_output_dir(
+            stack_paths.opencloud_root,
+            parsed_arguments.output_dir,
+        )
+        retention_policy = _build_retention_policy_from_arguments(parsed_arguments)
+    except ValidationError as validation_error:
+        sys.stderr.write(f"Error de configuración: {validation_error}\n")
+        return EXIT_ERROR
+
+    try:
+        retention_result = run_retention_job(
+            output_dir=output_dir,
+            policy=retention_policy,
+            deleter=FilesystemRetentionDeleter(),
+        )
+    except RetentionError as retention_error:
+        sys.stderr.write(
+            f"Error de retención: no se pudo eliminar {retention_error.path}.\n"
+        )
+        return EXIT_ERROR
+
+    _print_retention_success(retention_result)
     return EXIT_OK
 
 
@@ -923,6 +1097,8 @@ def main(command_line_arguments: list[str] | None = None) -> None:
         raise SystemExit(run_restore_command(parsed_arguments))
     if parsed_arguments.command == "verify":
         raise SystemExit(run_verify_command(parsed_arguments))
+    if parsed_arguments.command == "retention":
+        raise SystemExit(run_retention_command(parsed_arguments))
     raise SystemExit(EXIT_USAGE)
 
 

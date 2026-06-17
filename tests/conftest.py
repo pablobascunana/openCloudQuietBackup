@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -17,3 +18,8 @@ def write_env_file(opencloud_root: Path, content: str = "SECRET=1\n") -> Path:
     env_file_path = opencloud_root / ".env"
     env_file_path.write_text(content, encoding="utf-8")
     return env_file_path
+
+
+def make_backup_archive_name(timestamp: datetime, *, suffix: str = ".tar.zst") -> str:
+    stamp = timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    return f"opencloud-{stamp}{suffix}"

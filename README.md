@@ -321,7 +321,32 @@ uv run opencloud-quiet-backup verify \
   --sidecar /path/to/custom.sha256
 ```
 
-**Retention (US-030):** when deleting old backups, remove the paired sidecar `{archive}.sha256` together with the archive file.
+**Retention (US-030):** when deleting old backups, remove the paired sidecar `{archive}.sha256` together with the archive file. Retention is **opt-in**: nothing is deleted unless you configure limits.
+
+| Flag / env | Purpose |
+|------------|---------|
+| `--keep-days N` / `OCB_KEEP_DAYS` | Delete backups older than N UTC days (age from filename timestamp) |
+| `--keep-count N` / `OCB_KEEP_COUNT` | Keep at most N newest canonical backups |
+| `--no-retention` | Skip retention on `backup` even when env vars are set |
+
+On a successful `backup`, retention runs **after** the stack is back online. Only files matching `opencloud-YYYY-MM-DD_HHMMSS.tar.{zst,gz,}` in the output directory are eligible; other files are never touched.
+
+**Combined limits:** an archive is deleted if it is older than `--keep-days` **or** it is outside the newest `--keep-count` set. Example: with 3 backups aged 0, 7, and 47 days, `--keep-days 30 --keep-count 2` deletes only the 47-day-old file.
+
+```bash
+# Retention after backup (cron-friendly)
+uv run opencloud-quiet-backup backup \
+  --opencloud-root /volume1/docker/opencloud \
+  --keep-days 30 \
+  --keep-count 10
+
+# Standalone retention (no Docker / no stack stop)
+uv run opencloud-quiet-backup retention \
+  --opencloud-root /volume1/docker/opencloud \
+  --keep-days 30
+```
+
+Deletion details are logged to stderr (`retention: deleting …`). On success, stdout reports `Retención completada.` and deleted archive paths. If retention fails after a successful backup, the command exits with code **1** (the new archive path is still printed).
 
 ### Restore (US-020–US-024)
 
