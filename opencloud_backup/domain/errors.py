@@ -70,3 +70,10 @@ class HashMismatchError(IntegrityError):
         self.expected_hex = expected_hex
         self.actual_hex = actual_hex
         super().__init__("Archive SHA-256 does not match sidecar")
+
+
+class RetentionError(JobError):
+    def __init__(self, path: Path, *, cause: OSError | None = None) -> None:
+        self.path = path
+        self.cause = cause
+        super().__init__(f"Failed to delete: {path}")

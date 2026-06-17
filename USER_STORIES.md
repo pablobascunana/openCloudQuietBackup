@@ -240,8 +240,8 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Borrado solo de archivos que coincidan con el patrón de backups de la aplicación (no borrar otros ficheros).
-- [ ] Log de qué archivos se eliminaron.
+- [x] Borrado solo de archivos que coincidan con el patrón de backups de la aplicación (no borrar otros ficheros).
+- [x] Log de qué archivos se eliminaron.
 
 **Prioridad:** P1 · **MVP:** sí
 
