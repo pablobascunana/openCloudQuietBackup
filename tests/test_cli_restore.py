@@ -124,10 +124,11 @@ def test_restore_happy_path_exit_0(capsys: pytest.CaptureFixture[str]) -> None:
             main(_restore_argv(opencloud_root, archive_path))
         assert system_exit.value.code == EXIT_OK
         captured = capsys.readouterr()
-        assert "Restore completado (extracción y aplicación)" in captured.out
+        assert "Restore completado correctamente" in captured.out
+        assert "stack está en marcha" in captured.out
         assert str(snapshot_path) in captured.out
         assert str(archive_path.resolve()) in captured.out
-        assert "US-023" in captured.out
+        assert "US-023" not in captured.out
         assert "US-022" not in captured.out
         mock_job.assert_called_once()
 
@@ -322,6 +323,45 @@ def test_restore_passes_stop_timeout_to_job() -> None:
         assert mock_job.call_args.kwargs["stop_timeout_seconds"] == 300
 
 
+def test_restore_passes_start_timeout_to_job() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        with (
+            patch("opencloud_backup.cli.run_restore_job", return_value=result) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(_restore_argv(opencloud_root, archive_path, "--start-timeout", "300"))
+        assert mock_job.call_args.kwargs["start_timeout_seconds"] == 300
+
+
+def test_restore_env_start_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        monkeypatch.setenv("OCB_START_TIMEOUT", "240")
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        with (
+            patch("opencloud_backup.cli.run_restore_job", return_value=result) as mock_job,
+            pytest.raises(SystemExit),
+        ):
+            main(_restore_argv(opencloud_root, archive_path))
+        assert mock_job.call_args.kwargs["start_timeout_seconds"] == 240
+
+
+def test_restore_invalid_start_timeout_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        with pytest.raises(SystemExit) as system_exit:
+            main(_restore_argv(opencloud_root, archive_path, "--start-timeout", "0"))
+        assert system_exit.value.code == EXIT_USAGE
+        assert "start-timeout" in capsys.readouterr().err
+
+
 def test_restore_passes_snapshot_flags_to_job() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         opencloud_root = _setup_opencloud_root(temporary_directory)
@@ -447,4 +487,7 @@ def test_restore_stop_phase_logs_on_success(capsys: pytest.CaptureFixture[str]) 
         assert "restore: snapshot phase finished" in standard_error
         assert "restore: extract phase started" in standard_error
         assert "restore: apply phase started" in standard_error
-        assert "restore: up phase" not in standard_error
+        assert "restore: up phase started" in standard_error
+        assert "restore: up phase finished" in standard_error
+        assert "restore: ps phase finished" in standard_error
+        assert "ps-ok" in standard_error

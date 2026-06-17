@@ -135,8 +135,8 @@ Environment variables supported today:
 | `OCB_COMPOSE_FILE` | Explicit path to `docker-compose.yml` / `.yaml`. |
 | `OCB_MIN_FREE_BYTES` | Minimum free disk space (bytes) for `prereqs`. |
 | `OCB_MIN_FREE_PERCENT` | Minimum free disk space (percent 1–100) for `prereqs`. |
-| `OCB_STOP_TIMEOUT` | Timeout in seconds for `docker compose down` in `backup` (default 180). |
-| `OCB_START_TIMEOUT` | Timeout in seconds for `docker compose up -d` in `backup` (default 180). |
+| `OCB_STOP_TIMEOUT` | Timeout in seconds for `docker compose down` in `backup` and `restore` (default 180). |
+| `OCB_START_TIMEOUT` | Timeout in seconds for `docker compose up -d` in `backup` and `restore` (default 180). |
 | `OCB_OUTPUT_DIR` | Directory for backup archives (default: `{opencloud_root}/backups`). |
 | `OCB_COMPRESSION` | Default compression for `backup` (`zstd`, `gzip`, or `none`). |
 | `OCB_PACK_TIMEOUT` | Timeout in seconds for the pack phase in `backup` (default: unlimited). |
@@ -348,9 +348,9 @@ uv run opencloud-quiet-backup restore \
 
 **Disk space:** ensure the volume hosting snapshots and staging has at least as much free space as `config/`, `data/`, `.env`, and the uncompressed archive combined (estimate with `du -sh config data .env` and the archive size). Use `--disk-check-path` (default: parent of the snapshot base), `--min-free-bytes`, or `--min-free-percent` to enforce a threshold during prerequisite checks.
 
-**Rollback:** if extract or apply fails, the US-021 snapshot under `pre-restore-*` remains available for manual rsync rollback. Residual staging directories (`.restore-staging-*`) may remain if cleanup fails.
+**Rollback:** if extract or apply fails, the US-021 snapshot under `pre-restore-*` remains available for manual rsync rollback. Residual staging directories (`.restore-staging-*`) may remain if cleanup fails. The stack is **not** restarted on extract/apply failure (unlike backup, which always attempts `docker compose up` in a `finally` block after stop — US-012).
 
-On success, the stack remains stopped; `docker compose up` (US-023) must be run manually.
+On success, the job runs `docker compose up -d` (US-023) and prints `docker compose ps` output to stderr for a quick health check. Configure the start timeout with `--start-timeout` or `OCB_START_TIMEOUT` (default 180 seconds).
 
 ---
 
