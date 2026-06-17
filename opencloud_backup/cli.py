@@ -13,7 +13,7 @@ from opencloud_backup.config import (
     resolve_backup_output_dir,
     resolve_snapshot_base_dir,
 )
-from opencloud_backup.domain.archive import CompressionFormat
+from opencloud_backup.domain.archive import CompressionFormat, detect_compression_format
 from opencloud_backup.domain.errors import (
     ArchiveCommandError,
     ComposeCommandError,
@@ -325,7 +325,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     restore_subparser = subcommand_parsers.add_parser(
         "restore",
-        help="Restore OpenCloud stack (US-020, US-021): prereqs, stop stack, security snapshot.",
+        help="Restore OpenCloud stack (US-020–US-022): prereqs, stop, snapshot, extract, apply.",
+    )
+    restore_subparser.add_argument(
+        "--archive",
+        type=Path,
+        required=True,
+        help="Path to backup archive file (.tar.zst, .tar.gz, or .tar).",
     )
     restore_subparser.add_argument(
         "--opencloud-root",
@@ -395,6 +401,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=_optional_int_from_environment_variable("OCB_SNAPSHOT_TIMEOUT"),
         help="Per-rsync timeout in seconds (default: unlimited). Env: OCB_SNAPSHOT_TIMEOUT.",
+    )
+    restore_subparser.add_argument(
+        "--verify-hash",
+        action="store_true",
+        help="Verify archive SHA-256 sidecar before extract (US-013). Env: OCB_VERIFY_HASH.",
+    )
+    restore_subparser.add_argument(
+        "--extract-timeout",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_EXTRACT_TIMEOUT"),
+        help="Timeout in seconds for archive list/extract (default: unlimited). Env: OCB_EXTRACT_TIMEOUT.",
+    )
+    restore_subparser.add_argument(
+        "--apply-timeout",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_APPLY_TIMEOUT"),
+        help="Timeout in seconds for rsync apply phase (default: unlimited). Env: OCB_APPLY_TIMEOUT.",
     )
 
     verify_subparser = subcommand_parsers.add_parser(
@@ -617,6 +640,16 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         sys.stderr.write("Error: --snapshot-timeout must be at least 1 second.\n")
         return EXIT_USAGE
 
+    extract_timeout_seconds: int | None = parsed_arguments.extract_timeout
+    if extract_timeout_seconds is not None and extract_timeout_seconds < MIN_PACK_TIMEOUT_SECONDS:
+        sys.stderr.write("Error: --extract-timeout must be at least 1 second.\n")
+        return EXIT_USAGE
+
+    apply_timeout_seconds: int | None = parsed_arguments.apply_timeout
+    if apply_timeout_seconds is not None and apply_timeout_seconds < MIN_PACK_TIMEOUT_SECONDS:
+        sys.stderr.write("Error: --apply-timeout must be at least 1 second.\n")
+        return EXIT_USAGE
+
     try:
         stack_paths = load_stack_paths(
             opencloud_root=parsed_arguments.opencloud_root,
@@ -627,6 +660,17 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
             stack_paths.opencloud_root,
             parsed_arguments.snapshot_dir,
         )
+        archive_path = parsed_arguments.archive.expanduser().resolve()
+    except ValidationError as validation_error:
+        sys.stderr.write(f"Configuration error: {validation_error}\n")
+        return EXIT_ERROR
+
+    if not archive_path.is_file():
+        sys.stderr.write("Error: el archivo de backup no existe o no es accesible.\n")
+        return EXIT_ERROR
+
+    try:
+        detect_compression_format(archive_path)
     except ValidationError as validation_error:
         sys.stderr.write(f"Configuration error: {validation_error}\n")
         return EXIT_ERROR
@@ -637,17 +681,22 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         else default_disk_check_path_for_snapshot_base(snapshot_base_dir)
     )
     disk_threshold = _build_disk_threshold(min_free_bytes, min_free_percent)
+    verify_hash = parsed_arguments.verify_hash or _truthy_env("OCB_VERIFY_HASH")
 
     try:
-        snapshot_path = run_restore_job(
+        result = run_restore_job(
             stack_paths=stack_paths,
+            archive_path=archive_path,
             snapshot_base_dir=snapshot_base_dir,
             keep_previous_snapshot=parsed_arguments.keep_previous_snapshot,
             include_env=not parsed_arguments.no_env,
+            verify_hash=verify_hash,
             disk_check_path=disk_check_path,
             disk_threshold=disk_threshold,
             stop_timeout_seconds=stop_timeout_seconds,
             snapshot_timeout_seconds=snapshot_timeout_seconds,
+            extract_timeout_seconds=extract_timeout_seconds,
+            apply_timeout_seconds=apply_timeout_seconds,
             compose_runner=SubprocessComposeRunner(),
         )
     except PrerequisiteCheckError as prerequisite_check_error:
@@ -663,21 +712,38 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         return EXIT_ERROR
     except RsyncCommandError as rsync_command_error:
         sys.stderr.write(
-            "Error de restore: falló la copia de snapshot "
+            "Error de restore: falló rsync "
             f"({rsync_command_error.command_label}, código {rsync_command_error.return_code})\n"
         )
         if rsync_command_error.stderr:
             sys.stderr.write(f"  {rsync_command_error.stderr}\n")
         return EXIT_ERROR
+    except ArchiveCommandError as archive_command_error:
+        sys.stderr.write(
+            f"Error de restore: falló {archive_command_error.command_label} "
+            f"(código {archive_command_error.return_code})\n"
+        )
+        if archive_command_error.stderr:
+            sys.stderr.write(f"  {archive_command_error.stderr}\n")
+        return EXIT_ERROR
+    except SidecarNotFoundError:
+        sys.stderr.write("Error de integridad: no se encontró el archivo sidecar .sha256.\n")
+        return EXIT_ERROR
+    except HashMismatchError:
+        sys.stderr.write("Error de integridad: el hash del archivo no coincide con el sidecar.\n")
+        return EXIT_ERROR
+    except IntegrityError:
+        sys.stderr.write("Error de integridad: no se pudo verificar el archivo de backup.\n")
+        return EXIT_ERROR
     except ValidationError as validation_error:
         sys.stderr.write(f"Configuration error: {validation_error}\n")
         return EXIT_ERROR
 
-    print("Stack parado y snapshot de seguridad creado.")
-    print(f"  snapshot: {snapshot_path}")
+    print("Restore completado (extracción y aplicación).")
+    print(f"  snapshot: {result.snapshot_path}")
+    print(f"  archive: {result.archive_path}")
     print(
-        "Las fases de extracción y aplicación del backup (US-022) "
-        "y el arranque del stack (US-023) están pendientes."
+        "El arranque del stack (docker compose up, US-023) debe ejecutarse manualmente."
     )
     return EXIT_OK
 

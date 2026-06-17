@@ -186,9 +186,9 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Validación de que el archivo contiene `opencloud/config` y `opencloud/data`.
-- [ ] Soporte de extensiones `.tar.zst`, `.tar.gz`, `.tar`.
-- [ ] Si falta `.env` en el archivo, comportamiento documentado (no borrar el existente sin confirmación).
+- [x] Validación de que el archivo contiene `opencloud/config` y `opencloud/data`.
+- [x] Soporte de extensiones `.tar.zst`, `.tar.gz`, `.tar`.
+- [x] Si falta `.env` en el archivo, comportamiento documentado (no borrar el existente sin confirmación).
 
 **Prioridad:** P0 · **MVP:** sí
 

@@ -21,10 +21,11 @@ class TreeSyncer(Protocol):
         *,
         timeout_seconds: int | None = None,
         command_label: str = RSYNC_COMMAND_LABEL,
+        delete: bool = False,
     ) -> None: ...
 
 
-def build_rsync_argv(source: Path, destination: Path) -> list[str]:
+def build_rsync_argv(source: Path, destination: Path, *, delete: bool = False) -> list[str]:
     resolved_source = source.resolve()
     resolved_destination = destination.resolve()
     if resolved_source.is_file():
@@ -33,7 +34,11 @@ def build_rsync_argv(source: Path, destination: Path) -> list[str]:
     else:
         source_arg = f"{resolved_source}/"
         dest_arg = f"{resolved_destination}/"
-    return ["rsync", "-aHAX", source_arg, dest_arg]
+    argv = ["rsync", "-aHAX"]
+    if delete:
+        argv.append("--delete")
+    argv.extend([source_arg, dest_arg])
+    return argv
 
 
 @dataclass
@@ -47,8 +52,9 @@ class SubprocessTreeSyncer:
         *,
         timeout_seconds: int | None = None,
         command_label: str = RSYNC_COMMAND_LABEL,
+        delete: bool = False,
     ) -> None:
-        argv = build_rsync_argv(source, destination)
+        argv = build_rsync_argv(source, destination, delete=delete)
         try:
             completed_process = self.run_command(
                 argv,
