@@ -325,7 +325,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     restore_subparser = subcommand_parsers.add_parser(
         "restore",
-        help="Restore OpenCloud stack (US-020–US-022): prereqs, stop, snapshot, extract, apply.",
+        help="Restore OpenCloud stack (US-020–US-023): prereqs, stop, snapshot, extract, apply, up.",
     )
     restore_subparser.add_argument(
         "--archive",
@@ -358,6 +358,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=_optional_int_from_environment_variable("OCB_STOP_TIMEOUT") or DEFAULT_STOP_TIMEOUT_SECONDS,
         help=f"Timeout in seconds for docker compose down (default: {DEFAULT_STOP_TIMEOUT_SECONDS}). "
         "Env: OCB_STOP_TIMEOUT.",
+    )
+    restore_subparser.add_argument(
+        "--start-timeout",
+        type=int,
+        default=_optional_int_from_environment_variable("OCB_START_TIMEOUT") or DEFAULT_START_TIMEOUT_SECONDS,
+        help=f"Timeout in seconds for docker compose up -d (default: {DEFAULT_START_TIMEOUT_SECONDS}). "
+        "Env: OCB_START_TIMEOUT.",
     )
     restore_subparser.add_argument(
         "--min-free-bytes",
@@ -635,6 +642,14 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         )
         return EXIT_USAGE
 
+    start_timeout_seconds: int = parsed_arguments.start_timeout
+    if not MIN_START_TIMEOUT_SECONDS <= start_timeout_seconds <= MAX_START_TIMEOUT_SECONDS:
+        sys.stderr.write(
+            f"Error: --start-timeout debe estar entre {MIN_START_TIMEOUT_SECONDS} y "
+            f"{MAX_START_TIMEOUT_SECONDS} segundos.\n"
+        )
+        return EXIT_USAGE
+
     snapshot_timeout_seconds: int | None = parsed_arguments.snapshot_timeout
     if snapshot_timeout_seconds is not None and snapshot_timeout_seconds < MIN_PACK_TIMEOUT_SECONDS:
         sys.stderr.write("Error: --snapshot-timeout must be at least 1 second.\n")
@@ -694,6 +709,7 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
             disk_check_path=disk_check_path,
             disk_threshold=disk_threshold,
             stop_timeout_seconds=stop_timeout_seconds,
+            start_timeout_seconds=start_timeout_seconds,
             snapshot_timeout_seconds=snapshot_timeout_seconds,
             extract_timeout_seconds=extract_timeout_seconds,
             apply_timeout_seconds=apply_timeout_seconds,
@@ -739,12 +755,9 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         sys.stderr.write(f"Configuration error: {validation_error}\n")
         return EXIT_ERROR
 
-    print("Restore completado (extracción y aplicación).")
+    print("Restore completado correctamente. El stack está en marcha.")
     print(f"  snapshot: {result.snapshot_path}")
     print(f"  archive: {result.archive_path}")
-    print(
-        "El arranque del stack (docker compose up, US-023) debe ejecutarse manualmente."
-    )
     return EXIT_OK
 
 

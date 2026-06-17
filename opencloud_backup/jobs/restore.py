@@ -176,6 +176,7 @@ def run_restore_job(
     disk_check_path: Path,
     disk_threshold: DiskThreshold | None = None,
     stop_timeout_seconds: int,
+    start_timeout_seconds: int,
     snapshot_timeout_seconds: int | None = None,
     extract_timeout_seconds: int | None = None,
     apply_timeout_seconds: int | None = None,
@@ -278,6 +279,27 @@ def run_restore_job(
         raise
 
     residual_staging = _cleanup_staging_dir(staging_dir, log_line)
+
+    log_line(_format_phase_log_line("restore: up phase started"))
+    try:
+        runner.up(stack_paths, start_timeout_seconds)
+    except ComposeCommandError:
+        log_line(_format_phase_log_line("restore: up phase failed"))
+        raise
+    log_line(_format_phase_log_line("restore: up phase finished"))
+
+    log_line(_format_phase_log_line("restore: ps phase started"))
+    try:
+        ps_output = runner.ps(stack_paths)
+    except ComposeCommandError:
+        log_line(_format_phase_log_line("restore: ps phase failed"))
+    else:
+        log_line(_format_phase_log_line("restore: ps phase finished"))
+        if stderr_log is not None:
+            stderr_log(ps_output)
+        else:
+            sys.stderr.write(ps_output)
+
     return RestoreJobResult(
         snapshot_path=snapshot_path,
         archive_path=resolved_archive,

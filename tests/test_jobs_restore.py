@@ -19,10 +19,19 @@ from opencloud_backup.jobs.restore import _format_phase_log_line, run_restore_jo
 
 
 class FakeComposeRunner:
-    def __init__(self, *, should_fail_down: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        should_fail_down: bool = False,
+        should_fail_up: bool = False,
+        should_fail_ps: bool = False,
+    ) -> None:
         self.should_fail_down = should_fail_down
+        self.should_fail_up = should_fail_up
+        self.should_fail_ps = should_fail_ps
         self.down_calls: list[tuple[StackPaths, int]] = []
         self.up_calls: list[tuple[StackPaths, int]] = []
+        self.ps_calls: list[StackPaths] = []
 
     def down(self, stack_paths: StackPaths, timeout_seconds: int) -> None:
         self.down_calls.append((stack_paths, timeout_seconds))
@@ -31,8 +40,13 @@ class FakeComposeRunner:
 
     def up(self, stack_paths: StackPaths, timeout_seconds: int) -> None:
         self.up_calls.append((stack_paths, timeout_seconds))
+        if self.should_fail_up:
+            raise ComposeCommandError("docker compose up -d", 1, "compose failed")
 
     def ps(self, stack_paths: StackPaths) -> str:
+        self.ps_calls.append(stack_paths)
+        if self.should_fail_ps:
+            raise ComposeCommandError("docker ps (compose project)", 1, "compose failed")
         return "ps-ok"
 
 
@@ -115,6 +129,7 @@ def _job_kwargs(stack_paths: StackPaths, snapshot_base: Path, archive_path: Path
         "snapshot_base_dir": snapshot_base,
         "disk_check_path": stack_paths.opencloud_root,
         "stop_timeout_seconds": 180,
+        "start_timeout_seconds": 180,
     }
     kwargs.update(overrides)
     return kwargs
@@ -186,7 +201,10 @@ def test_run_restore_job_happy_path_returns_result() -> None:
         assert result.archive_path == archive_path.resolve()
         assert result.staging_path is None
         assert len(fake_runner.down_calls) == 1
-        assert fake_runner.up_calls == []
+        assert len(fake_runner.up_calls) == 1
+        assert fake_runner.up_calls[0] == (stack_paths, 180)
+        assert len(fake_runner.ps_calls) == 1
+        assert fake_runner.ps_calls[0] == stack_paths
         assert len(fake_syncer.sync_calls) == 6
         snapshot_calls = [call for call in fake_syncer.sync_calls if call[3].startswith("rsync snapshot")]
         apply_calls = [call for call in fake_syncer.sync_calls if call[3].startswith("rsync apply")]
@@ -201,6 +219,8 @@ def test_run_restore_job_happy_path_returns_result() -> None:
         assert not staging_dir.exists()
         assert any(line.endswith("restore: extract phase finished") for line in log_lines)
         assert any(line.endswith("restore: apply phase finished") for line in log_lines)
+        assert any(line.endswith("restore: up phase finished") for line in log_lines)
+        assert any(line.endswith("restore: ps phase finished") for line in log_lines)
 
 
 def test_run_restore_job_include_env_false_skips_snapshot_env_only() -> None:
@@ -334,6 +354,7 @@ def test_run_restore_job_extract_fail_no_apply() -> None:
         archive_path = _archive_path(Path(temporary_directory))
         fake_syncer = FakeTreeSyncer()
         fake_extractor = FakeArchiveExtractor(fail_on="extract")
+        fake_runner = FakeComposeRunner()
         log_lines: list[str] = []
 
         with (
@@ -345,7 +366,7 @@ def test_run_restore_job_extract_fail_no_apply() -> None:
         ):
             run_restore_job(
                 **_job_kwargs(stack_paths, snapshot_base, archive_path),
-                compose_runner=FakeComposeRunner(),
+                compose_runner=fake_runner,
                 tree_syncer=fake_syncer,
                 archive_extractor=fake_extractor,
                 stderr_log=log_lines.append,
@@ -354,6 +375,7 @@ def test_run_restore_job_extract_fail_no_apply() -> None:
 
         apply_calls = [call for call in fake_syncer.sync_calls if call[3].startswith("rsync apply")]
         assert apply_calls == []
+        assert fake_runner.up_calls == []
         assert any(line.endswith("restore: extract phase failed") for line in log_lines)
 
 
@@ -365,6 +387,7 @@ def test_run_restore_job_apply_fail_logs_apply_failed() -> None:
         stack_paths = _stack_paths(root)
         archive_path = _archive_path(Path(temporary_directory))
         fake_syncer = FakeTreeSyncer(fail_on_label="rsync apply data")
+        fake_runner = FakeComposeRunner()
         log_lines: list[str] = []
 
         with (
@@ -376,13 +399,14 @@ def test_run_restore_job_apply_fail_logs_apply_failed() -> None:
         ):
             run_restore_job(
                 **_job_kwargs(stack_paths, snapshot_base, archive_path),
-                compose_runner=FakeComposeRunner(),
+                compose_runner=fake_runner,
                 tree_syncer=fake_syncer,
                 archive_extractor=FakeArchiveExtractor(),
                 stderr_log=log_lines.append,
                 snapshot_timestamp=datetime(2026, 6, 16, 12, 0, 0, tzinfo=timezone.utc),
             )
 
+        assert fake_runner.up_calls == []
         assert any(line.endswith("restore: apply phase failed") for line in log_lines)
 
 
@@ -611,3 +635,64 @@ def test_run_restore_job_timestamp_collision_raises() -> None:
             )
 
         assert any(line.endswith("restore: snapshot phase failed") for line in log_lines)
+
+
+def test_run_restore_job_up_failure_raises_compose_error() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(root)
+        snapshot_base = root / "snapshots"
+        stack_paths = _stack_paths(root)
+        archive_path = _archive_path(Path(temporary_directory))
+        fake_runner = FakeComposeRunner(should_fail_up=True)
+        log_lines: list[str] = []
+
+        with (
+            patch(
+                "opencloud_backup.jobs.restore.run_prerequisite_checks",
+                return_value=_ok_prereq_report(),
+            ),
+            pytest.raises(ComposeCommandError, match="docker compose up -d"),
+        ):
+            run_restore_job(
+                **_job_kwargs(stack_paths, snapshot_base, archive_path),
+                compose_runner=fake_runner,
+                tree_syncer=FakeTreeSyncer(),
+                archive_extractor=FakeArchiveExtractor(),
+                stderr_log=log_lines.append,
+                snapshot_timestamp=datetime(2026, 6, 16, 12, 0, 0, tzinfo=timezone.utc),
+            )
+
+        assert len(fake_runner.up_calls) == 1
+        assert fake_runner.ps_calls == []
+        assert any(line.endswith("restore: up phase failed") for line in log_lines)
+
+
+def test_run_restore_job_ps_failure_still_succeeds() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory) / "oc"
+        make_valid_stack_tree(root)
+        snapshot_base = root / "snapshots"
+        stack_paths = _stack_paths(root)
+        archive_path = _archive_path(Path(temporary_directory))
+        fake_runner = FakeComposeRunner(should_fail_ps=True)
+        log_lines: list[str] = []
+
+        with patch(
+            "opencloud_backup.jobs.restore.run_prerequisite_checks",
+            return_value=_ok_prereq_report(),
+        ):
+            result = run_restore_job(
+                **_job_kwargs(stack_paths, snapshot_base, archive_path),
+                compose_runner=fake_runner,
+                tree_syncer=FakeTreeSyncer(),
+                archive_extractor=FakeArchiveExtractor(),
+                stderr_log=log_lines.append,
+                snapshot_timestamp=datetime(2026, 6, 16, 12, 0, 0, tzinfo=timezone.utc),
+            )
+
+        assert isinstance(result, RestoreJobResult)
+        assert len(fake_runner.up_calls) == 1
+        assert len(fake_runner.ps_calls) == 1
+        assert any(line.endswith("restore: ps phase failed") for line in log_lines)
+        assert not any(line.endswith("restore: ps phase finished") for line in log_lines)

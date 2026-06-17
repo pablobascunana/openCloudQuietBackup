@@ -204,7 +204,7 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Log de `ps` o equivalente.
+- [x] Log de `ps` o equivalente.
 - [ ] Opción futura: comprobación HTTP (historia aparte) — no bloquea MVP.
 
 **Prioridad:** P0 · **MVP:** sí
