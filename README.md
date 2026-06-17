@@ -141,6 +141,8 @@ Environment variables supported today:
 | `OCB_COMPRESSION` | Default compression for `backup` (`zstd`, `gzip`, or `none`). |
 | `OCB_PACK_TIMEOUT` | Timeout in seconds for the pack phase in `backup` (default: unlimited). |
 | `OCB_WRITE_HASH` | When `1`, `true`, or `yes` (case-insensitive), enable SHA-256 sidecar write on `backup` (same as `--write-hash`). |
+| `OCB_VERIFY_HASH` | When `1`, `true`, or `yes`, verify SHA-256 sidecar before restore extract (same as `--verify-hash`). |
+| `OCB_I_KNOW_WHAT_IM_DOING` | When `1`, `true`, or `yes`, skip interactive restore confirmation (same as `--i-know-what-im-doing`). |
 
 ---
 
@@ -321,21 +323,41 @@ uv run opencloud-quiet-backup verify \
 
 **Retention (US-030):** when deleting old backups, remove the paired sidecar `{archive}.sha256` together with the archive file.
 
-### Restore (US-020–US-022)
+### Restore (US-020–US-024)
 
 Stops the stack with `docker compose down`, copies the current live `config/`, `data/`, and optional `.env` into a timestamped security snapshot under `{opencloud_root}/snapshots/pre-restore-YYYY-MM-DD_HHMMSS/` using `rsync -aHAX` (no `--delete`), then extracts the backup archive and applies it to the live tree with `rsync -aHAX --delete` on `config/` and `data/`. The snapshot base directory is created automatically if missing.
 
 `--archive` is **required** and must be a `.tar.zst`, `.tar.gz`, or `.tar` file matching the canonical backup layout (`opencloud/config`, `opencloud/data`, optional `opencloud/.env`).
 
+**Confirmation (US-024):** restore is destructive. Before stopping the stack, the CLI requires explicit confirmation:
+
+| Mode | When | Behaviour |
+|------|------|-----------|
+| Interactive (TTY) | SSH session with stdin and stdout attached | Prints a summary of affected paths to stderr, then prompts you to type the **exact archive basename** (case-sensitive). |
+| Non-interactive bypass | Cron, CI, pipes, or scripts | Pass `--i-know-what-im-doing` or set `OCB_I_KNOW_WHAT_IM_DOING=1` (or `true` / `yes`). |
+| Non-interactive without bypass | No TTY and no flag/env | Exit code **2** with an error message. |
+
+Cancellation, wrong basename, or EOF during the prompt returns exit code **1** without starting the job.
+
+> **Breaking change (US-024):** `restore` no longer starts immediately in non-interactive environments. Cron jobs, CI pipelines, and scripts must pass `--i-know-what-im-doing` or set `OCB_I_KNOW_WHAT_IM_DOING` after upgrading.
+
 ```bash
+# Interactive SSH (prompt for archive basename)
 uv run opencloud-quiet-backup restore \
   --opencloud-root /volume1/docker/opencloud \
   --archive /volume1/backups/opencloud-2026-06-14_101530.tar.zst
+
+# Cron / non-interactive (explicit bypass required)
+uv run opencloud-quiet-backup restore \
+  --opencloud-root /volume1/docker/opencloud \
+  --archive /volume1/backups/opencloud-2026-06-14_101530.tar.zst \
+  --i-know-what-im-doing
 
 # Verify SHA-256 sidecar before extract, custom snapshot base, exclude .env from snapshot only
 uv run opencloud-quiet-backup restore \
   --opencloud-root /volume1/docker/opencloud \
   --archive /volume1/backups/opencloud-2026-06-14_101530.tar.zst \
+  --i-know-what-im-doing \
   --verify-hash \
   --snapshot-dir /volume1/backups/opencloud-snapshots \
   --keep-previous-snapshot \
@@ -461,7 +483,7 @@ From Cursor, the **Engram** MCP server exposes read and write (`mem_search`, `me
 ## Next development steps
 
 1. **US-012** — Stack start after backup (`docker compose up -d`).
-2. **US-020–US-023** — Restore flow with prior snapshot and confirmation.
+2. **US-020–US-024** — Restore flow with prior snapshot and CLI confirmation.
 3. **US-031** — Auto-create output directory (today: must exist).
 
 See the [MVP summary](./USER_STORIES.md#resumen-mvp-sugerido) in `USER_STORIES.md` for the full list.

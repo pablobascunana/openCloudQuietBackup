@@ -221,7 +221,7 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] En CLI: flag obligatorio o prompt interactivo.
+- [x] En CLI: flag obligatorio o prompt interactivo.
 - [ ] En UI: segundo paso de confirmación con resumen de rutas afectadas.
 
 **Prioridad:** P1 · **MVP:** sí (mínimo en CLI)

@@ -66,8 +66,27 @@ def _archive_file(temporary_directory: str) -> Path:
     return archive
 
 
-def _restore_argv(opencloud_root: Path, archive_path: Path, *extra: str) -> list[str]:
-    return ["restore", "--opencloud-root", str(opencloud_root), "--archive", str(archive_path), *extra]
+def _restore_argv(
+    opencloud_root: Path,
+    archive_path: Path,
+    *extra: str,
+    confirm: bool = True,
+) -> list[str]:
+    argv = ["restore", "--opencloud-root", str(opencloud_root), "--archive", str(archive_path), *extra]
+    if confirm:
+        argv.append("--i-know-what-im-doing")
+    return argv
+
+
+def _tty_patches(
+    *,
+    stdin_tty: bool = True,
+    stdout_tty: bool = True,
+) -> tuple[object, object]:
+    return (
+        patch("opencloud_backup.cli.sys.stdin.isatty", return_value=stdin_tty),
+        patch("opencloud_backup.cli.sys.stdout.isatty", return_value=stdout_tty),
+    )
 
 
 def test_restore_missing_root_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
@@ -491,3 +510,227 @@ def test_restore_stop_phase_logs_on_success(capsys: pytest.CaptureFixture[str]) 
         assert "restore: up phase finished" in standard_error
         assert "restore: ps phase finished" in standard_error
         assert "ps-ok" in standard_error
+
+
+def test_restore_non_tty_without_flag_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        stdin_patch, stdout_patch = _tty_patches(stdin_tty=False, stdout_tty=True)
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job") as mock_job,
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        assert system_exit.value.code == EXIT_USAGE
+        standard_error = capsys.readouterr().err
+        assert "--i-know-what-im-doing" in standard_error
+        assert "confirmación explícita" in standard_error
+        mock_job.assert_not_called()
+
+
+def test_restore_non_tty_stdout_only_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        stdin_patch, stdout_patch = _tty_patches(stdin_tty=True, stdout_tty=False)
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job") as mock_job,
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        assert system_exit.value.code == EXIT_USAGE
+        assert "confirmación explícita" in capsys.readouterr().err
+        mock_job.assert_not_called()
+
+
+def test_restore_flag_skips_prompt() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job", return_value=result) as mock_job,
+            patch("builtins.input") as mock_input,
+            pytest.raises(SystemExit),
+        ):
+            main(_restore_argv(opencloud_root, archive_path))
+        mock_input.assert_not_called()
+        mock_job.assert_called_once()
+
+
+def test_restore_env_skips_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        monkeypatch.setenv("OCB_I_KNOW_WHAT_IM_DOING", "1")
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job", return_value=result) as mock_job,
+            patch("builtins.input") as mock_input,
+            pytest.raises(SystemExit),
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        mock_input.assert_not_called()
+        mock_job.assert_called_once()
+
+
+def test_restore_interactive_correct_basename(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job", return_value=result) as mock_job,
+            patch("builtins.input", return_value=archive_path.name),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        assert system_exit.value.code == EXIT_OK
+        assert "Confirmación de restore" in capsys.readouterr().err
+        mock_job.assert_called_once()
+
+
+def test_restore_interactive_wrong_basename_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job") as mock_job,
+            patch("builtins.input", return_value="wrong.tar.zst"),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        assert system_exit.value.code == EXIT_ERROR
+        assert "Restore cancelado" in capsys.readouterr().err
+        mock_job.assert_not_called()
+
+
+def test_restore_interactive_empty_input_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job") as mock_job,
+            patch("builtins.input", return_value=""),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        assert system_exit.value.code == EXIT_ERROR
+        assert "Restore cancelado" in capsys.readouterr().err
+        mock_job.assert_not_called()
+
+
+def test_restore_interactive_eof_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job") as mock_job,
+            patch("builtins.input", side_effect=EOFError),
+            pytest.raises(SystemExit) as system_exit,
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        assert system_exit.value.code == EXIT_ERROR
+        assert "Restore cancelado" in capsys.readouterr().err
+        mock_job.assert_not_called()
+
+
+def test_restore_confirmation_summary_includes_compose_dir_when_different(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        compose_dir = Path(temporary_directory) / "compose_project"
+        compose_dir.mkdir()
+        (compose_dir / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        archive_path = _archive_file(temporary_directory)
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job", return_value=result),
+            patch("builtins.input", return_value=archive_path.name),
+            pytest.raises(SystemExit),
+        ):
+            main(
+                _restore_argv(
+                    opencloud_root,
+                    archive_path,
+                    "--compose-dir",
+                    str(compose_dir),
+                    confirm=False,
+                )
+            )
+        assert f"compose_dir: {compose_dir.resolve()}" in capsys.readouterr().err
+
+
+def test_restore_confirmation_summary_omits_compose_dir_when_same(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job", return_value=result),
+            patch("builtins.input", return_value=archive_path.name),
+            pytest.raises(SystemExit),
+        ):
+            main(_restore_argv(opencloud_root, archive_path, confirm=False))
+        assert "compose_dir:" not in capsys.readouterr().err
+
+
+def test_restore_confirmation_summary_lists_active_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        opencloud_root = _setup_opencloud_root(temporary_directory)
+        archive_path = _archive_file(temporary_directory)
+        result = RestoreJobResult(snapshot_path=Path("/snap"), archive_path=archive_path, staging_path=None)
+        stdin_patch, stdout_patch = _tty_patches()
+        with (
+            stdin_patch,
+            stdout_patch,
+            patch("opencloud_backup.cli.run_restore_job", return_value=result),
+            patch("builtins.input", return_value=archive_path.name),
+            pytest.raises(SystemExit),
+        ):
+            main(
+                _restore_argv(
+                    opencloud_root,
+                    archive_path,
+                    "--no-env",
+                    "--keep-previous-snapshot",
+                    "--verify-hash",
+                    confirm=False,
+                )
+            )
+        standard_error = capsys.readouterr().err
+        assert "  --no-env" in standard_error
+        assert "  --keep-previous-snapshot" in standard_error
+        assert "  --verify-hash" in standard_error

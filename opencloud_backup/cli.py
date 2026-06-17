@@ -8,6 +8,7 @@ from pathlib import Path
 from opencloud_backup.adapters.docker_compose import SubprocessComposeRunner
 from opencloud_backup.adapters.prerequisites import run_prerequisite_checks
 from opencloud_backup.config import (
+    StackPaths,
     ValidationError,
     load_stack_paths,
     resolve_backup_output_dir,
@@ -46,6 +47,16 @@ DOCKER_PS_FAILURE_HINT = (
     "Hint: add your user to the 'docker' group, verify /var/run/docker.sock permissions, "
     "then re-login or restart your session."
 )
+_RESTORE_CONFIRMATION_HEADER = "=== Confirmación de restore (US-024) ==="
+_RESTORE_CONFIRMATION_WARNING = (
+    "ADVERTENCIA: esta operación es destructiva. Detendrá el stack Docker, "
+    "sobrescribirá config/ y data/ en disco, y puede sobrescribir .env si el backup lo incluye."
+)
+_RESTORE_NON_TTY_MESSAGE = (
+    "Error: el restore destructivo requiere confirmación explícita. "
+    "Use --i-know-what-im-doing o establezca OCB_I_KNOW_WHAT_IM_DOING en entornos no interactivos.\n"
+)
+_RESTORE_CANCEL_MESSAGE = "Restore cancelado.\n"
 
 
 def _path_from_environment_variable(environment_variable_name: str) -> Path | None:
@@ -156,6 +167,91 @@ def _format_prerequisite_failure(report: PrerequisiteReport) -> str:
                 f"requires {threshold.value}%"
             )
     return "\n".join(lines)
+
+
+def _format_restore_confirmation_summary(
+    *,
+    archive_path: Path,
+    stack_paths: StackPaths,
+    snapshot_base_dir: Path,
+    include_env_in_snapshot: bool,
+    keep_previous_snapshot: bool,
+    verify_hash: bool,
+) -> list[str]:
+    lines = [
+        _RESTORE_CONFIRMATION_HEADER,
+        "",
+        _RESTORE_CONFIRMATION_WARNING,
+        "",
+        f"  archive: {archive_path}",
+        f"  opencloud_root: {stack_paths.opencloud_root}",
+        f"  config_dir: {stack_paths.config_dir}",
+        f"  data_dir: {stack_paths.data_dir}",
+        f"  snapshot_base_dir: {snapshot_base_dir}",
+    ]
+    if stack_paths.compose_dir != stack_paths.opencloud_root:
+        lines.append(f"  compose_dir: {stack_paths.compose_dir}")
+    lines.append("")
+    lines.append("Opciones activas:")
+    active_flags: list[str] = []
+    if not include_env_in_snapshot:
+        active_flags.append("  --no-env")
+    if keep_previous_snapshot:
+        active_flags.append("  --keep-previous-snapshot")
+    if verify_hash:
+        active_flags.append("  --verify-hash")
+    if active_flags:
+        lines.extend(active_flags)
+    else:
+        lines.append("  (ninguna)")
+    return lines
+
+
+def _confirm_restore_destructive(
+    *,
+    archive_path: Path,
+    stack_paths: StackPaths,
+    snapshot_base_dir: Path,
+    include_env_in_snapshot: bool,
+    keep_previous_snapshot: bool,
+    verify_hash: bool,
+    skip_confirmation: bool,
+) -> int | None:
+    if skip_confirmation:
+        return None
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        sys.stderr.write(_RESTORE_NON_TTY_MESSAGE)
+        return EXIT_USAGE
+
+    for line in _format_restore_confirmation_summary(
+        archive_path=archive_path,
+        stack_paths=stack_paths,
+        snapshot_base_dir=snapshot_base_dir,
+        include_env_in_snapshot=include_env_in_snapshot,
+        keep_previous_snapshot=keep_previous_snapshot,
+        verify_hash=verify_hash,
+    ):
+        sys.stderr.write(f"{line}\n")
+
+    expected_basename = archive_path.name
+    sys.stderr.write(
+        f"\nEscriba exactamente el nombre del archivo para continuar "
+        f"(solo el nombre, no la ruta): {expected_basename}\n"
+    )
+    sys.stderr.write("> ")
+    sys.stderr.flush()
+
+    try:
+        response = input()
+    except EOFError:
+        response = ""
+
+    if response.strip() != expected_basename:
+        sys.stderr.write(_RESTORE_CANCEL_MESSAGE)
+        return EXIT_ERROR
+
+    return None
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -325,7 +421,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     restore_subparser = subcommand_parsers.add_parser(
         "restore",
-        help="Restore OpenCloud stack (US-020–US-023): prereqs, stop, snapshot, extract, apply, up.",
+        help="Restore OpenCloud stack (US-020–US-024): prereqs, confirmation, stop, snapshot, extract, apply, up.",
     )
     restore_subparser.add_argument(
         "--archive",
@@ -425,6 +521,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=_optional_int_from_environment_variable("OCB_APPLY_TIMEOUT"),
         help="Timeout in seconds for rsync apply phase (default: unlimited). Env: OCB_APPLY_TIMEOUT.",
+    )
+    restore_subparser.add_argument(
+        "--i-know-what-im-doing",
+        action="store_true",
+        help="Skip interactive restore confirmation (US-024). Required in non-TTY environments. "
+        "Env: OCB_I_KNOW_WHAT_IM_DOING.",
     )
 
     verify_subparser = subcommand_parsers.add_parser(
@@ -690,13 +792,29 @@ def run_restore_command(parsed_arguments: argparse.Namespace) -> int:
         sys.stderr.write(f"Configuration error: {validation_error}\n")
         return EXIT_ERROR
 
+    verify_hash = parsed_arguments.verify_hash or _truthy_env("OCB_VERIFY_HASH")
+    skip_confirmation = (
+        parsed_arguments.i_know_what_im_doing
+        or _truthy_env("OCB_I_KNOW_WHAT_IM_DOING")
+    )
+    confirmation_exit_code = _confirm_restore_destructive(
+        archive_path=archive_path,
+        stack_paths=stack_paths,
+        snapshot_base_dir=snapshot_base_dir,
+        include_env_in_snapshot=not parsed_arguments.no_env,
+        keep_previous_snapshot=parsed_arguments.keep_previous_snapshot,
+        verify_hash=verify_hash,
+        skip_confirmation=skip_confirmation,
+    )
+    if confirmation_exit_code is not None:
+        return confirmation_exit_code
+
     disk_check_path = (
         parsed_arguments.disk_check_path.expanduser().resolve()
         if parsed_arguments.disk_check_path is not None
         else default_disk_check_path_for_snapshot_base(snapshot_base_dir)
     )
     disk_threshold = _build_disk_threshold(min_free_bytes, min_free_percent)
-    verify_hash = parsed_arguments.verify_hash or _truthy_env("OCB_VERIFY_HASH")
 
     try:
         result = run_restore_job(
