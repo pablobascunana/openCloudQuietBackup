@@ -168,9 +168,9 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 
 **Criterios de aceptación**
 
-- [ ] Directorio de snapshot configurable; nombre con marca de tiempo.
-- [ ] Opción “conservar snapshot anterior” vs “sustituir”.
-- [ ] Documentación del espacio adicional requerido.
+- [x] Directorio de snapshot configurable; nombre con marca de tiempo.
+- [x] Opción “conservar snapshot anterior” vs “sustituir”.
+- [x] Documentación del espacio adicional requerido.
 
 **Prioridad:** P1 · **MVP:** sí
 
@@ -434,6 +434,7 @@ Aplicación orientada a backups **coherentes** de OpenCloud en Docker (parada de
 | US-011 | Tar canónico con metadatos |
 | US-012 | Arrancar tras backup |
 | US-020 | Parar antes de restore |
+| US-021 | Snapshot de seguridad previo al restore |
 | US-022 | Extraer y rsync |
 | US-023 | Arrancar tras restore |
 | US-024 | Confirmación restore (CLI) |

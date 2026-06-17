@@ -7,9 +7,11 @@ from pathlib import Path
 __all__ = [
     "StackPaths",
     "ValidationError",
+    "ensure_snapshot_base_dir",
     "load_stack_paths",
     "resolve_backup_output_dir",
     "resolve_compose_file",
+    "resolve_snapshot_base_dir",
     "validate_backup_output_dir",
 ]
 
@@ -127,6 +129,40 @@ def resolve_backup_output_dir(opencloud_root: Path, output_dir: Path | str | Non
         default_backup_output_dir(opencloud_root) if output_dir is None else Path(output_dir)
     )
     return validate_backup_output_dir(target_output_dir)
+
+
+def resolve_snapshot_base_dir(
+    opencloud_root: Path,
+    snapshot_dir: Path | str | None = None,
+) -> Path:
+    from opencloud_backup.domain.snapshot import default_snapshot_base_dir
+
+    if snapshot_dir is None:
+        return default_snapshot_base_dir(opencloud_root)
+    candidate = Path(snapshot_dir).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        return candidate.resolve()
+    except OSError as operating_system_error:
+        raise ValidationError(
+            f"Could not resolve snapshot directory: {snapshot_dir}. {operating_system_error}"
+        ) from operating_system_error
+
+
+def ensure_snapshot_base_dir(path: Path) -> Path:
+    if not path.exists():
+        try:
+            path.mkdir(parents=True)
+        except OSError as operating_system_error:
+            raise ValidationError(
+                f"Could not create snapshot directory: {path}. {operating_system_error}"
+            ) from operating_system_error
+    if not path.is_dir():
+        raise ValidationError(f"Snapshot path exists but is not a directory: {path}")
+    if not os.access(path, os.W_OK):
+        raise ValidationError(f"Snapshot directory is not writable: {path}")
+    return path.resolve()
 
 
 def load_stack_paths(

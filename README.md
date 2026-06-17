@@ -321,6 +321,26 @@ uv run opencloud-quiet-backup verify \
 
 **Retention (US-030):** when deleting old backups, remove the paired sidecar `{archive}.sha256` together with the archive file.
 
+### Restore (US-020, US-021)
+
+Stops the stack with `docker compose down`, then copies the current live `config/`, `data/`, and optional `.env` into a timestamped security snapshot under `{opencloud_root}/snapshots/pre-restore-YYYY-MM-DD_HHMMSS/` using `rsync -aHAX` (no `--delete`). The snapshot base directory is created automatically if missing.
+
+```bash
+uv run opencloud-quiet-backup restore \
+  --opencloud-root /volume1/docker/opencloud
+
+# Custom snapshot base, keep previous snapshots, exclude .env
+uv run opencloud-quiet-backup restore \
+  --opencloud-root /volume1/docker/opencloud \
+  --snapshot-dir /volume1/backups/opencloud-snapshots \
+  --keep-previous-snapshot \
+  --no-env
+```
+
+**Disk space:** ensure the volume hosting snapshots has at least as much free space as `config/`, `data/`, and `.env` combined (estimate with `du -sh config data .env`). Use `--disk-check-path` (default: parent of the snapshot base), `--min-free-bytes`, or `--min-free-percent` to enforce a threshold during prerequisite checks.
+
+On success, the stack remains stopped; archive extract/apply (US-022) and `compose up` (US-023) are not part of this release yet.
+
 ---
 
 ## Repository structure
